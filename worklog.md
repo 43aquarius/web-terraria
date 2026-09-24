@@ -188,3 +188,26 @@ Work Log:
 - 萤火虫(kind 1)渲染在暖光晕后: 亮度 0.35+0.65*max(0,sin(phase)), 亮核 2x2 #f4f8b8 + 5x5 像素微光晕 #d8e888
 - 验证: hurtPlayer(12)→shake=4.8 衰减 45 帧归零✅ 深夜星星月亮✅ 白天蝴蝶✅ 夜晚萤火虫自发光✅ 水塘波纹✅
 - VLM 复审 6/6 通过, 无控制台错误, dev.log 全 200, lint/tsc 干净
+
+---
+Task ID: 7-a
+Agent: main
+Task: 单文件 HTML 复刻 (public/terraria.html)
+
+Work Log:
+- 关键发现: store.ts 是纯观察者模式(无 React 依赖), src/game/* 全部 11 个模块框架无关, 引擎代码可直接复用
+- 新增 standalone/main.ts (~700 行): 原生 DOM 复刻 React UI 层
+  - 完整 CSS (~330 行): 心形血条/气泡/槽位/快捷栏/信息条/背包+合成面板/消息/帮助面板/标题屏/死亡屏/暂停菜单/loading + 7 组 keyframes 动画, 响应式断点 400/640/1024px 对齐 React 版
+  - 渲染层: ui.subscribe 订阅 + 分区 memo(slots/hearts/messages/craftables/info/cursor 各自脏检查), 避免无关状态重建 DOM 导致动画重放
+  - 交互: 事件委托(槽位 mousedown 左右键/合成点击/tooltip hover), tooltip+光标物品 mousemove 跟随, 键盘 E/Tab/Esc/M/H/1-0 与 React 版逻辑一致
+  - SVG 内联图标替代 lucide (太阳/月亮/音量/帮助), 零外部请求
+- 新增 standalone/build.ts: Bun.build IIFE 打包 + </script> 转义 + HTML 模板内联(data-URI favicon)
+- 产物: public/terraria.html 168.3KB 单文件, 零依赖零网络请求, 可 file:// 直接打开
+- 验证(agent-browser): 标题屏→进入世界(铜镐/斧/剑三件套)→E 开背包→给木头→合成面板(木平台/工作台)→合成工作台(扣 10 木)→A 移动→Esc 暂停菜单→保存(localStorage 124KB)→reload→继续上次冒险→世界/背包/血量完整还原→tooltip 悬停(铜镐金色名+数值)→375x667 移动端 10 列格子无溢出→无 console 错误
+- VLM 双图审查: 世界渲染/心条/快捷栏/小地图/信息条齐全, tooltip 层级清晰, 移动端布局规整
+- bun-types 三斜线引用修复 build.ts 的 tsc 报错; tsc 0 错误 / lint 0 错误
+
+Stage Summary:
+- 产出: standalone/main.ts + standalone/build.ts + public/terraria.html(168KB)
+- 单文件版与 Next.js 版共享同一套引擎代码和同一 localStorage 存档键(tw-save-v1), 存档互通
+- 重建命令: bun standalone/build.ts
