@@ -1,10 +1,12 @@
 /**
- * 世界渲染管线：天空 -> 墙/瓦片(含液体/家具/发光块) -> 掉落物 -> 敌怪/NPC/玩家 -> 粒子/投射物
- *            -> 光照罩 -> 光晕 -> 伤害数字/血条 -> 光标高亮 -> 屏幕特效 -> 小地图 -> 全屏地图
+ * 世界渲染管线：天空 -> [树林剪影/深度分层背景] -> 墙/瓦片(含描边/液体/家具/发光块) -> 掉落物
+ *            -> 敌怪/NPC/玩家 -> 粒子/投射物 -> 光照罩 -> 光晕 -> 伤害数字/血条
+ *            -> 光标高亮 -> 屏幕特效 -> 小地图 -> 全屏地图
  */
 
-import { T, TileDefs, ItemDefs, IT, ARMOR_COLORS, BIOME_NAMES, ENEMY_DEFS } from './constants';
+import { T, TileDefs, ItemDefs, IT, ARMOR_COLORS, BIOME_NAMES, ENEMY_DEFS, TILE_COUNT } from './constants';
 import { drawSkyBackground } from './sky';
+import { mulberry32 } from './textures';
 import {
   drawHumanoid, drawSlime, drawEye, drawBat, drawEos, drawEoC, drawArrow, drawBomb,
   PLAYER_PALETTE, ZOMBIE_PALETTE, GUIDE_PALETTE, SKELETON_PALETTE,
@@ -53,6 +55,275 @@ function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: n
   ctx.closePath();
 }
 
+// ==================== 10-c A: 地形边缘描边 (ART-SPEC §4) ====================
+
+/**
+ * 视觉整块：实心方块 + 非实心但画满整格的草皮/树干/树冠/蘑菇柄/门。
+ * 描边“暴露”判定用——邻格为此类时该侧不画描边(否则草地/树干内部会出现断续暗缝)。
+ */
+const VISUAL_FULL: Uint8Array = (() => {
+  const a = new Uint8Array(TILE_COUNT);
+  for (let i = 0; i < TILE_COUNT; i++) a[i] = TileDefs[i].solid ? 1 : 0;
+  const full = [
+    T.GRASS, T.JUNGLE_GRASS, T.CORRUPT_GRASS,          // 草皮方块(非实心但视觉整块)
+    T.TRUNK, T.MUSH_STEM,                              // 树干/蘑菇柄
+    T.LEAF, T.LEAF_SNOW, T.LEAF_JUNGLE, T.LEAF_CORRUPT, // 树冠
+    T.DOOR_C_T, T.DOOR_C_B, T.DOOR_O_T, T.DOOR_O_B,    // 门
+  ];
+  for (const id of full) a[id] = 1;
+  return a;
+})();
+
+interface EdgeStyle {
+  top: string;       // 顶边 2px (alpha 0.55)
+  bottom: string;    // 底边 2px (alpha 0.40)
+  side: string;      // 侧边 2px (alpha 0.50)
+  skipTop: boolean;  // 草系方块顶面已有草皮覆层/烘焙草, 不叠普通顶描边
+}
+
+/** 材质 → 描边 RGB (ART-SPEC §4: 泥土系#49393f 石头系#292c30 沙#a08040 雪#b8ccd8 泥#3a2c22
+ *  黑檀石#2a2534 狱岩#4a1408 黑曜石#151122 木#291e15 冰#6a9eb8;
+ *  未列出的灰烬/仙人掌取同系暗色) */
+const EDGE_MATS: [number[], string][] = [
+  [[T.DIRT, T.CLAY, T.GRASS], '73,57,63'],                       // 泥土系 #49393f
+  [[T.STONE, T.ORE_COPPER, T.ORE_IRON, T.ORE_SILVER, T.ORE_GOLD], '41,44,48'], // 石头系 #292c30
+  [[T.SAND], '160,128,64'],                                     // 沙 #a08040
+  [[T.SNOW], '184,204,216'],                                    // 雪 #b8ccd8
+  [[T.MUD, T.JUNGLE_GRASS], '58,44,34'],                        // 泥 #3a2c22
+  [[T.CORRUPT_STONE, T.CORRUPT_GRASS], '42,37,52'],             // 黑檀石 #2a2534
+  [[T.HELLSTONE], '74,20,8'],                                   // 狱岩 #4a1408
+  [[T.OBSIDIAN], '21,17,34'],                                   // 黑曜石 #151122
+  [[T.WOOD], '41,30,21'],                                       // 木板/木系 #291e15
+  [[T.ICE], '106,158,184'],                                     // 冰 #6a9eb8
+  [[T.ASH], '42,38,51'],                                        // 灰烬(地狱系暗紫灰 #2a2633)
+  [[T.CACTUS], '29,64,32'],                                     // 仙人掌(深绿 #1d4020)
+];
+
+/** 方块 id → 描边样式(模块级常量表, 零每帧字符串分配); undefined = 不描边(家具/装饰/液体) */
+const EDGE_STYLES: (EdgeStyle | undefined)[] = (() => {
+  const t: (EdgeStyle | undefined)[] = new Array(TILE_COUNT).fill(undefined);
+  for (const [ids, rgb] of EDGE_MATS) {
+    for (const id of ids) {
+      t[id] = {
+        top: `rgba(${rgb},0.55)`,
+        bottom: `rgba(${rgb},0.40)`,
+        side: `rgba(${rgb},0.50)`,
+        skipTop: id === T.GRASS || id === T.JUNGLE_GRASS || id === T.CORRUPT_GRASS,
+      };
+    }
+  }
+  return t;
+})();
+
+/**
+ * 四邻描边(在方块绘制后同循环内调用)：
+ * 上/下/侧邻暴露 → 2px 暗色条；暴露角(两相邻方向皆空)→ 2×2 缺角切口(L 形双臂各 4px)。
+ * 每屏仅地表/洞穴壁的暴露面会触发 fillRect, 被完整包围的方块 4 次查表后立即返回。
+ */
+function drawTileEdges(
+  ctx: CanvasRenderingContext2D, wld: World, x: number, y: number, px: number, py: number, es: EdgeStyle,
+): void {
+  const up = VISUAL_FULL[wld.get(x, y - 1)] === 0;
+  const dn = VISUAL_FULL[wld.get(x, y + 1)] === 0;
+  const lf = VISUAL_FULL[wld.get(x - 1, y)] === 0;
+  const rt = VISUAL_FULL[wld.get(x + 1, y)] === 0;
+  if (!up && !dn && !lf && !rt) return;
+  if (up && !es.skipTop) { ctx.fillStyle = es.top; ctx.fillRect(px, py, 16, 2); }
+  if (dn) { ctx.fillStyle = es.bottom; ctx.fillRect(px, py + 14, 16, 2); }
+  if (lf || rt) {
+    ctx.fillStyle = es.side;
+    if (lf) ctx.fillRect(px, py, 2, 16);
+    if (rt) ctx.fillRect(px + 14, py, 2, 16);
+    // 暴露角 L 形切口(侧色; 与顶/侧条叠加后角点最暗 → 圆角轮廓感)
+    if (!es.skipTop && up && (lf || rt)) {
+      if (lf) { ctx.fillRect(px, py, 2, 4); ctx.fillRect(px, py, 4, 2); }
+      if (rt) { ctx.fillRect(px + 14, py, 2, 4); ctx.fillRect(px + 12, py, 4, 2); }
+    }
+    if (dn && (lf || rt)) {
+      if (lf) { ctx.fillRect(px, py + 12, 2, 4); ctx.fillRect(px, py + 14, 4, 2); }
+      if (rt) { ctx.fillRect(px + 14, py + 12, 2, 4); ctx.fillRect(px + 12, py + 14, 4, 2); }
+    }
+  }
+}
+
+// ==================== 10-c B: 墙缘暗边 ====================
+
+/** 贴图内已烘焙 rgba(0,0,0,0.42) 墙体暗化(textures.wallFrom), 此处只补墙-空气交界的深色描边 */
+const WALL_EDGE = 'rgba(0,0,0,0.30)';
+
+// ==================== 10-c C: 深度分层背景 (程序化, 预生成一次) ====================
+
+/** 平滑阶梯(交叠渐变用) */
+function ss01(v: number): number {
+  const c = v < 0 ? 0 : v > 1 ? 1 : v;
+  return c * c * (3 - 2 * c);
+}
+
+/** 量化 alpha → rgba 字符串表(模块级预生成, 每帧零字符串分配) */
+function mkRamp(rgb: string): string[] {
+  const a: string[] = new Array(101);
+  for (let i = 0; i <= 100; i++) a[i] = `rgba(${rgb},${(i / 100).toFixed(2)})`;
+  return a;
+}
+const DIRT_RAMP = mkRamp('20,14,10');    // 土层整体暗化(最深 0.55)
+const STONE_RAMP = mkRamp('10,10,16');   // 石层/洞穴(最深 0.70)
+const HELL_RAMP = mkRamp('40,8,4');      // 地狱暗红(最深 0.80)
+const GLOW_RAMP = mkRamp('122,32,8');    // 地狱底部岩浆光晕 #7a2008
+
+/** 远处树林剪影层: 800×200, 底部对齐地表线; 圆弧树冠 + 主干, 环绕无缝平铺 */
+function makeForestLayer(seed: number, color: string, hMin: number, hMax: number): HTMLCanvasElement {
+  const W = 800, H = 200;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const x = cv.getContext('2d')!;
+  const r = mulberry32(seed);
+  x.fillStyle = color;
+  x.fillRect(0, H - 4, W, 4);                       // 贴合地表的连续地被带(防树间露缝悬空)
+  const n = 24 + ((r() * 8) | 0);
+  for (let i = 0; i < n; i++) {
+    const cx = Math.floor(r() * W);
+    const th = hMin + r() * (hMax - hMin);          // 树整体高度
+    const tw = 2 + ((r() * 2) | 0);                 // 主干宽 2-3px
+    const trunkH = th * (0.45 + r() * 0.2);         // 主干露出高度
+    const topY = H - 4 - th;
+    const blobs = 2 + ((r() * 3) | 0);              // 2-4 团圆弧树冠
+    // 树冠参数先定稿再绘制, 保证环绕副本与本体完全一致(接缝无缝)
+    const crown: number[][] = [];
+    let rw = th * (0.30 + r() * 0.15);
+    let cy = topY + rw * 0.5;
+    for (let b = 0; b < blobs; b++) {
+      crown.push([(r() - 0.5) * rw * 1.5, cy - topY, rw]);
+      cy += rw * 0.62;
+      rw *= 0.78;
+    }
+    const ext = th * 0.5 + 4;
+    const xs = cx < ext ? [cx, cx + W] : cx > W - ext ? [cx, cx - W] : [cx];
+    for (const bx of xs) {
+      x.fillRect(bx - (tw >> 1), H - 4 - trunkH, tw, trunkH + 4);
+      for (const c of crown) {
+        x.beginPath();
+        x.arc(bx + c[0], topY + c[1], c[2], 0, Math.PI * 2);
+        x.fill();
+      }
+    }
+  }
+  return cv;
+}
+
+/** 洞穴大石暗斑 pattern 512×512: 稀疏 #16181e 大石剪影(3-6 团圆弧聚合), 九宫平铺保证无缝 */
+function makeCaveRocks(): HTMLCanvasElement {
+  const S = 512;
+  const cv = document.createElement('canvas');
+  cv.width = S; cv.height = S;
+  const x = cv.getContext('2d')!;
+  const r = mulberry32(91551);
+  x.fillStyle = '#16181e';
+  for (let i = 0; i < 13; i++) {
+    const bx = r() * S, by = r() * S;
+    const parts = 3 + ((r() * 4) | 0);
+    let rad = 16 + r() * 30;
+    for (let j = 0; j < parts; j++) {
+      const px = bx + (r() - 0.5) * rad * 2.4;
+      const py = by + (r() - 0.5) * rad * 2.4;
+      const pr = rad * (0.55 + r() * 0.5);
+      for (let ox = -S; ox <= S; ox += S) {
+        for (let oy = -S; oy <= S; oy += S) {
+          x.beginPath();
+          x.arc(px + ox, py + oy, pr, 0, Math.PI * 2);
+          x.fill();
+        }
+      }
+      rad *= 0.92;
+    }
+  }
+  return cv;
+}
+
+let silFar: HTMLCanvasElement | null = null;    // 远层剪影 #2a4535 (视差 0.25)
+let silNear: HTMLCanvasElement | null = null;   // 近层剪影 #1d3328 (视差 0.35)
+let caveRocks: HTMLCanvasElement | null = null; // 洞穴大石斑(视差 0.5)
+
+/**
+ * 地表树林剪影(屏幕空间, 山峦之上/地形之下)：两层深浅圆弧树冠,
+ * 底部对齐地表线, 随相机入地淡出; 夜间随阳光强度压暗。
+ */
+function drawForestBackdrop(g: GameEngine, ctx: CanvasRenderingContext2D, W: number, H: number): void {
+  const fade = 1 - clamp(g.sky.depthPx / 460, 0, 1);   // 相机入地后渐隐(山峦同此节奏)
+  if (fade <= 0.02) return;
+  // 懒初始化(局部变量窄化类型, 模块级缓存)
+  const far = silFar ?? (silFar = makeForestLayer(10011, '#2a4535', 46, 96));
+  const near = silNear ?? (silNear = makeForestLayer(10012, '#1d3328', 64, 132));
+  const zoom = g.zoom;
+  const patW = 800 * zoom, patH = 200 * zoom;
+  const surfY = Math.round((g.surfaceYpx() - g.camY) * zoom);   // 地表线(相机中心列)屏幕 y
+  const dim = 0.5 + 0.5 * g.sky.skyLight;                       // 夜间压暗剪影
+  ctx.imageSmoothingEnabled = false;
+  // 远层: 视差 0.25
+  let y = surfY - patH + 2 * zoom;
+  if (y < H && y + patH > -8) {
+    const scroll = (g.camX * 0.25) % patW;
+    ctx.globalAlpha = 0.62 * fade * dim;
+    for (let sx = -scroll; sx < W; sx += patW) ctx.drawImage(far, Math.round(sx), y, patW, patH);
+  }
+  // 近层: 视差 0.35, 锚点略低/树更高
+  y = surfY - patH + 5 * zoom;
+  if (y < H && y + patH > -8) {
+    const scroll = (g.camX * 0.35) % patW;
+    ctx.globalAlpha = 0.85 * fade * dim;
+    for (let sx = -scroll; sx < W; sx += patW) ctx.drawImage(near, Math.round(sx), y, patW, patH);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * 深度分层背景(世界空间, 墙之上/方块之下)：
+ * 土层(地表下 40 格→35%) 整体叠棕暗; 石层/洞穴(35%→75%) 叠蓝黑 + 大石斑 pattern(视差 0.5);
+ * 地狱(85%+) 叠暗红 + 屏底岩浆光晕。区间交叠 10% 平滑插值, 深度按玩家 y 相对地表线归一。
+ */
+function drawDepthBackdrop(g: GameEngine, ctx: CanvasRenderingContext2D, wld: World): void {
+  const p = g.player;
+  const pgx = clamp(Math.floor(p.x / 16), 0, wld.w - 1);
+  const surf = wld.surface[pgx];
+  const span = Math.max(80, wld.hellY - surf);       // 地表→地狱的地下跨度(格)
+  const nd = (p.y / 16 - surf) / span;                // 归一化深度(0=地表, 1≈地狱顶)
+  const nd0 = 40 / span;                              // 土层起点(+40 格)
+  const aDirt = 0.55 * ss01((nd - nd0) / Math.max(0.04, 0.35 - nd0)) * (1 - ss01((nd - 0.35) / 0.10));
+  const aStone = 0.70 * ss01((nd - 0.35) / 0.10) * (1 - ss01((nd - 0.75) / 0.10));
+  const aHell = 0.80 * ss01((nd - 0.75) / 0.10);
+  if (aDirt <= 0.004 && aStone <= 0.004 && aHell <= 0.004) return;
+  const vx = g.camX - 16, vy = g.camY - 16;           // 视口(世界像素, 外扩 1 格防震动露边)
+  const vw = g.viewW() + 32, vh = g.viewH() + 32;
+  if (aDirt > 0.004) {
+    ctx.fillStyle = DIRT_RAMP[Math.round(aDirt * 100)];
+    ctx.fillRect(vx, vy, vw, vh);
+  }
+  if (aStone > 0.004) {
+    ctx.fillStyle = STONE_RAMP[Math.round(aStone * 100)];
+    ctx.fillRect(vx, vy, vw, vh);
+    // 洞穴大石暗斑: 预生成 512×512 pattern, 视差 0.5 世界坐标平铺
+    const rocks = caveRocks ?? (caveRocks = makeCaveRocks());
+    ctx.globalAlpha = clamp(aStone / 0.7, 0, 1) * 0.9;
+    const S = 512;
+    const sx0 = Math.floor((vx * 0.5) / S) * S;
+    const sy0 = Math.floor((vy * 0.5) / S) * S;
+    for (let yy = sy0; yy < vy + vh; yy += S) {
+      for (let xx = sx0; xx < vx + vw; xx += S) ctx.drawImage(rocks, xx, yy);
+    }
+    ctx.globalAlpha = 1;
+  }
+  if (aHell > 0.004) {
+    ctx.fillStyle = HELL_RAMP[Math.round(aHell * 100)];
+    ctx.fillRect(vx, vy, vw, vh);
+    // 屏底岩浆光晕渐变 #7a2008
+    const gy = vy + vh * 0.5;
+    const grad = ctx.createLinearGradient(0, gy, 0, vy + vh);
+    grad.addColorStop(0, 'rgba(122,32,8,0)');
+    grad.addColorStop(1, GLOW_RAMP[Math.round(aHell * 60)]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(vx, gy, vw, vh - vh * 0.5);
+  }
+}
+
 export function renderGame(g: GameEngine): void {
   if (!g.world || !g.player) return;
   const ctx = g.ctx;
@@ -69,6 +340,8 @@ export function renderGame(g: GameEngine): void {
   g.sky.timeSec = g.timeSec;
   ctx.setTransform(g.dpr, 0, 0, g.dpr, 0, 0);
   drawSkyBackground(ctx, W, H, g.sky);
+  // ---- 地表树林剪影(屏幕空间, 山峦之上/地形之下) ----
+  drawForestBackdrop(g, ctx, W, H);
 
   // ---- 世界空间 ----
   ctx.save();
@@ -90,7 +363,7 @@ export function renderGame(g: GameEngine): void {
   // ---- 全屏地图迷雾缓存增量维护(世界变更时全量重建一次, 平时仅坐标比较) ----
   updateFog(g);
 
-  // ---- 背景墙 ----
+  // ---- 背景墙 (贴图已烘焙 0.42 暗化) + 墙缘暗边(与无墙空气交界 2px, 洞穴纵深) ----
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const id = wld.tiles[y * wld.w + x];
@@ -99,8 +372,24 @@ export function renderGame(g: GameEngine): void {
       if (!wall) continue;
       const arr = tex.walls.get(wall);
       if (arr) ctx.drawImage(arr[(x * 7 + y * 11) % arr.length], x * 16, y * 16);
+      // 墙缘: 邻格无墙且邻格非实心方块(实心方块会盖住描边) → 该侧 2px 深色
+      const wU = !wld.getWall(x, y - 1) && !TileDefs[wld.get(x, y - 1)].solid;
+      const wD = !wld.getWall(x, y + 1) && !TileDefs[wld.get(x, y + 1)].solid;
+      const wL = !wld.getWall(x - 1, y) && !TileDefs[wld.get(x - 1, y)].solid;
+      const wR = !wld.getWall(x + 1, y) && !TileDefs[wld.get(x + 1, y)].solid;
+      if (wU || wD || wL || wR) {
+        const px = x * 16, py = y * 16;
+        ctx.fillStyle = WALL_EDGE;
+        if (wU) ctx.fillRect(px, py, 16, 2);
+        if (wD) ctx.fillRect(px, py + 14, 16, 2);
+        if (wL) ctx.fillRect(px, py, 2, 16);
+        if (wR) ctx.fillRect(px + 14, py, 2, 16);
+      }
     }
   }
+
+  // ---- 深度分层背景(墙之上/方块之下): 土层暗化 / 石层大石斑 / 地狱暗红+岩浆光晕 ----
+  drawDepthBackdrop(g, ctx, wld);
 
   // ---- 瓦片 ----
   const glows: { c: HTMLCanvasElement; x: number; y: number; s: number }[] = [];
@@ -118,6 +407,8 @@ export function renderGame(g: GameEngine): void {
         ctx.drawImage(tex.grassTop, px, py - 4);
         if (!wld.isSolid(x - 1, y) && wld.get(x - 1, y) !== T.GRASS) ctx.drawImage(tex.grassSideL, px, py);
         if (!wld.isSolid(x + 1, y) && wld.get(x + 1, y) !== T.GRASS) ctx.drawImage(tex.grassSideR, px, py);
+        // 草方块: 顶面由 grassTop 覆层负责(skipTop), 侧/底仍叠泥土系描边
+        drawTileEdges(ctx, wld, x, y, px, py, EDGE_STYLES[T.GRASS]!);
         continue;
       }
       if (id === T.LEAF) {
@@ -248,6 +539,7 @@ export function renderGame(g: GameEngine): void {
           ctx.fillRect(px + ((h >>> 7) % 14) + 1, py + ((h >>> 11) % 14) + 1, 1, 1);
         }
         if (h % 8 === 0) glows.push({ c: tex.glowRed, x: px + 8, y: py + 8, s: 60 });
+        drawTileEdges(ctx, wld, x, y, px, py, EDGE_STYLES[T.HELLSTONE]!);
         continue;
       }
       if (id === T.MUSH_CAP) {
@@ -266,6 +558,9 @@ export function renderGame(g: GameEngine): void {
       //          MUSH_STEM/CACTUS/SAPLING/VINE/LEAF_SNOW/LEAF_JUNGLE/LEAF_CORRUPT 等自包含贴图
       const arr = tex.tiles.get(id);
       if (arr) ctx.drawImage(arr[(x * 13 + y * 7) % arr.length], px, py);
+      // 实心材质(泥土/石头/矿/沙/雪/冰/泥/黑曜石/木/仙人掌等)四邻描边; 装饰/家具不在表内自动跳过
+      const es = EDGE_STYLES[id];
+      if (es) drawTileEdges(ctx, wld, x, y, px, py, es);
     }
   }
 

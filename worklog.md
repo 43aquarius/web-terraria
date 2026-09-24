@@ -454,3 +454,80 @@ Work Log:
 Stage Summary:
 - 9 系列全部完成: 9-0/9-1 契约 → 9-a/b/c/d 并行(世界/贴图/实体/音频) → 9-e 引擎 → 9-f/9-g 渲染UI → 9-h 单文件 → 9-int 集成验证+关键Boss修复 → 9-i 推送
 - 交付物: Next.js 版(/) + 单文件版(/terraria.html, 336KB) 双形态, 同一引擎同一存档
+
+---
+Task ID: 10-b
+Agent: general-purpose (sprites)
+Task: 重写 sprites.ts — 2x 块状像素风角色/敌怪精灵
+Work Log:
+- 按序阅读 worklog.md(末 200 行)/ART-SPEC.md(§2 调色板 + §5 精灵规范)/旧 sprites.ts(516 行)/render.ts 全部调用点(entities/engine 不直接引用 sprites, 唯一调用方 render.ts)
+- 仅重写 src/game/sprites.ts(517 行), 全部导出签名/接口字段不变: HumanoidPalette 9 个必有字段原样保留, 新增可选扩展色阶(hairLight/hairDark/shirtShade/pantsDark/shoeDark/inner), SlimePalette 新增可选 line(描边色) —— 可选字段对调用方零破坏(render.ts 零改动通过 tsc/lint)
+- 调色板全部换 ART-SPEC 精确值: PLAYER(发 #873822/#c25132/#542316, 肤 #ff7d5a/#be5d43, 眼白 #f1f1f1+瞳 #1f232a, 上衣 #e3cd9c/#beab82/#afa58c, 内衬 #6e634b+领口 shadeHex×0.45=#322d22, 裤 #8494b1/#7786a0, 鞋 #321812/#190c08) / ZOMBIE(腐绿皮 #7a9a5a/#5a7a40, 破衣 #6e634b/#4a4438, 暗绿发 #4a5a38, 红瞳 #c03838) / GUIDE(金发 #e8c860/#c8a040, 蓝裤 #5a7ab0, 米上衣) / SKELETON(骨白 #d8d8d0/#a8a8a0/#787870, 黑瞳 #101014, 肋缝=shirtDark #787870)
+- drawHumanoid 全新逐像素实现: 10x15 逻辑=20x30 帧(P(c,r)=fillRect(c*2-10,r*2-30,w*2,h*2) 全偶数), 布局=头 6x5(发 2 行[顶亮行+后侧暗列+前额发丝]+脸 3 行[后侧阴影列+眼白 1px+朝向侧瞳+两侧垂发/鬓角) / 躯干 6x4(胸口 2 处暗纹+前侧阴影列+领口+腰部 1 行内衬) / 髋 1 行 / 腿 2x3 裤+1 行裤脚暗+底 1 行鞋(前半鞋色后半鞋暗) / 手臂 2x3(袖 1 行+肤 2 行)
+- 走路 8 帧查找表 WALK_F/WALK_B(前/后腿各 [dx,lift]): 摆幅 ±2px、抬腿 1px、过中线帧一腿抬起一腿支撑, 帧 7 与帧 5 区分(7=前腿抬/5=后腿抬); 手臂反相摆(afdx=-fdx); 空中姿态=后腿后抬 1+前腿前伸(上升 vy<-0.5 时收 2); 僵尸/骷髅 zombieArms=双臂水平前伸(后臂从躯干后穿出+前臂横胸+手下垂)+嘴部暗色; 盔甲四件套(头盔[盔顶高光/面甲沿/盔后板+裙/护鼻留眼]/胸甲[侧缝+甲片缝+领口亮+腰带]/臂甲[袖亮+甲身+暗缝+手]/腿甲[膝盖高光])全部在 2x 网格重绘; 挥舞=肩(4,-20)旋转坐标系内 2px 块手臂(3 阶段由 render 传入的连续 angle 驱动)+物品 drawImage 锚点逻辑保留; flash 全色 #ff5040
+- drawSlime: 适配任意判定盒(w/2 x h/2 逻辑网格), 水滴轮廓(顶 1px 圆弧→0.55/0.85 渐宽→中下部全宽→平底), 全周 1 逻辑 px 描边(轮廓膨胀一圈, line 色), 主体底 1 行暗色, 左上 1x2 高光斑, 双眼=深色竖椭圆(2x6/2x4)+顶部白点 2x2、随 dir 偏移; squish→dw=clamp(round(squish*2.5),±1) 宽+1 高-1(拉伸反向); maxHW=floor(lw/2) 保证 squash 档位可见; 半透明 α0.88 保留; 三调色板带 line 描边色(#1d5a1d/#0a1c42/#6b1e08)
+- drawEye 重设计: 像素圆球(圆弦轮廓 rows=max(4,round(min(w,h+2)/4)*2), h=14→16x16 球) #f1f1f1 + 边缘血丝 #d05050(6 处确定性 2 段折线) + 大虹膜 #c03030 4x4 朝 dir 偏移 2px + 瞳 #1a1a2a 2x2(朝向前侧) + 顶部 #ffffff 高光; 背后 3 条 #b04040 触须(替换旧翅膀, 随 t 摆动 ±2px)
+- drawBat: 身体 3x3 #4a3628+双耳 2x2, 翅膀两帧(上展/下收)3 段折线块 #3a2818, 红眼 #e03030 2x2 朝向前侧
+- drawEos: 分节虫体=头(12x12 描边 #4a3568+8x8 主体 #6a4d8e+3 颗白牙 #f1f1f1+红眼 #d83030)/身节 x2(6x6 圆段 #5a4278+底部暗边, 随 anim 起伏 ±2 交错)/尾(2x4 细尖); mr() 镜像助手处理 dir
+- drawEoC: 像素椭圆球体(rows=round((h-6)/2)=16 行×maxHW=11 → 44x32)+确定性 8 处血丝+大虹膜 #c03030 12x10(lookX/Y 偶数量化 clamp ±6)+瞳 #1a1a2a 4x4+顶部 #ffffff 4x4 高光; phase1 巨口=暗口腔 #3a0a0a(6 行渐宽 8..20..8px)+红牙 #a02020 上下各 5 颗锯齿(长短交替)+±2px 脉动; 后部 5 条 #b04040 触须(2px 块, animT 摆动); flash>0 白色 α0.55 覆盖
+- drawArrow: 杆 #976b4b+头 #adb8cd(两段收窄)+尾羽 #e8e8e8 上下各 2 片, save/translate/rotate(angle) 结构保留; drawBomb: 8x8 像素圆黑球 #2a2a30+高光 #55555f+引线 #78553c+火花 #ffd75e/#ff9a3c/#fff2b0 双频闪烁(闪烁节奏沿用旧 t*0.8/t*1.7)
+- 全部精灵锚点 snap2()吸附 2px 网格, 保证任何位置下 fillRect 落在偶数坐标(2x 块对齐)
+- 验收自测(临时脚本 /home/z/sprites_test.ts, 已删): mock canvas 记录 fillRect, 149 项断言全过 —— a) 8 走路帧(walkT=k*π/4)腿部色块坐标 8/8 帧互异(要求≥6); b) 输出含 #873822/#ff7d5a/#8494b1/#321812(另验证 #c25132/#542316/#be5d43/#f1f1f1/#1f232a/#e3cd9c/#6e634b/#7786a0 全到位)+全部色块在 20x30 帧内; c) drawSlime 含 #205ad4+#0a1c42+#1a49ac+#4074e2 且描边包围盒四边超出主体≥2px, squash(0.34) 宽 24>20 高 14<16, 三调色板×4 squish×2 dir×2 flash 共 48 组合冒烟; d) drawEoC 含 #f1f1f1+#c03030+#1a1a2a+#d05050+#b04040+#ffffff, phase1 含 #a02020+白闪, 相位/look 极值冒烟; e) humanoid 9 状态×4 调色板+slime/eye/bat/eos/eoc/bomb 全部 fillRect 坐标尺寸为偶数(含奇数坐标输入、dir=-1、盔甲+空中挥舞组合), drawArrow(旋转例外)5 角度冒烟; 附加: swing.icon=null 回退/blinkHidden/僵尸红瞳/骷髅黑瞳+肋缝
+- ASCII 目检(临时脚本已删): 玩家静止/走路帧 2/帧 5/跳跃/铜盔甲/僵尸/骷髅/向导 + 蓝绿史莱姆 + 恶魔眼 + 蝙蝠双帧 + 噬魂者 + EoC 双相位, 布局逐块核对(头脸眼/躯干纹/髋腿鞋/手臂摆/盔甲层/水滴描边/虫体分节/巨口锯齿)全部符合设计; 期间修正 2 处: eos 身节 mr(-3) 奇数坐标→mr(-4), slime maxHW round→floor(奇数 lw 时 squash 档位不可见)
+- 环境: bunx tsc --noEmit -p tsconfig.json — src 零错误(仅 examples/skills 既有 4 错, 与基线一致); bun run lint exit 0(eslint sprites.ts 零问题)
+- 浏览器实测(dev server localhost:3000): 进入世界零 page error/console 错误; 切白天后 canvas 采样确认玩家新调色板全到位(#ff7d5a 416px/#873822 112px/#8494b1/#e3cd9c 144px/#321812 296px/#f1f1f1 32px); G 刷怪后僵尸 #6e634b 在屏; 截图 agent-ctx/10b_*.png(注: 史莱姆半透明 α0.88 与背景混色, 屏上采样不做精确色断言, 精确色由 mock 测试覆盖)
+Stage Summary:
+- 交付: 仅 src/game/sprites.ts 一个文件(全量重写 517 行); 调用方 render.ts/entities.ts/engine.ts 零改动; HumanoidPalette/SlimePalette 仅新增可选字段(扩展色阶/描边色), 全部函数签名与 opts 字段 100% 不变
+- 视觉: 角色/敌怪全部对齐 ART-SPEC 2x 块状像素规范(逻辑像素→2x2 fillRect), 玩家 20x30 帧、史莱姆水滴+全周描边、恶魔眼/蝙蝠/噬魂者/EoC 逐像素重绘, 调色板为规格精确色值
+- 验证: mock 149/149 断言(含任务书 a-e 全条款)+tsc src 零错误+lint exit 0+浏览器实测零错误
+- 已知说明: ①旧 public/terraria.html 单文件产物内嵌旧 sprites 代码, 需后续任务执行 standalone/build.ts 重建才会带上新精灵(本任务红线=只改 sprites.ts, 未动产物); ②史莱姆 "16x24(8x12 逻辑)" 规格解读为标称帧比例参考, 实际按判定盒 w/2×h/2 逻辑网格绘制(gslime 8x6/bslime 11x8/lslime 9x7), 保证碰撞视觉一致; ③腿长 6 逻辑行(裤 3+髋 1+暗脚 1+鞋 1)以填满 10x15 帧, 规格字面 "腿 2x3" 按裤区 3 行落实
+
+---
+Task ID: 10-a
+Agent: general-purpose (textures) [超时前完成代码, 由 main 验证收尾]
+Task: 重写 textures.ts — 参考站精确调色板 + 2×2 块状纹理系统
+
+Work Log:
+- 子代理执行超时(context deadline), 但代码已完成: textures.ts 1300→1683 行, 内部 51 个绘制函数全量重写
+- 接口契约 100% 保留: mulberry32 / GameTextures 全字段 / getTextures() 单例
+- 核心: logical() 助手(8×8 逻辑网格 → ×2 放大 16×16)实现参考站的 2×2 块状像素结构
+- 调色板换为 ART-SPEC.md 精确值(泥土 #976b4b/#725138/#bf8f6f、石头 #616772 五档、草 #1e9648/#1cd85e/#0d6524、四矿粒团+闪光色、树皮竖纹马尔可夫、树叶亮上暗下等)
+- main 接手验证: tsc 零错误 + 浏览器像素采样 13/14 目标色命中(泥土三档/石头两档/草三档/玩家肤色发色裤色/树干/树叶全部在屏)
+
+Stage Summary:
+- 交付: textures.ts 全量重写(2x 块状结构 + 参考站精确调色板), 编译零错误, 渲染验证通过
+
+---
+Task ID: 10-c
+Agent: general-purpose (render) [超时前完成代码, 由 main 验证收尾]
+Task: render.ts 升级 — 边缘描边 + 墙面暗化 + 深度分层背景
+
+Work Log:
+- 子代理执行超时, 代码已完成: render.ts 44KB, 含 EDGE_MATS 材质→描边色映射表 + drawTileEdges + 树林剪影层 + 深度分层背景
+- main 接手验证(浏览器实测):
+  - 边缘描边: 地形区检测到 12,015 个暗边采样点(泰拉瑞亚标志性地形轮廓)✓
+  - 深度背景: 地表角落亮度 77 → 洞穴 40(55% 深度实时传送实测)✓
+  - 火把照明: 洞穴中心亮度 6(黑暗) → 47(持火把)✓
+  - 远处树林剪影层 + 地表线对齐 ✓
+- tsc/lint 零错误, 全程零 page error
+
+Stage Summary:
+- 交付: render.ts 三大视觉升级(描边/背景/暗化)全部生效, 浏览器像素级验证通过
+
+---
+Task ID: 10-d
+Agent: main
+Task: 视觉验证循环 — 程序化像素采样替代 VLM(VLM 账户级 429 限流)
+
+Work Log:
+- VLM 评审三次尝试均 429 限流, 改用更精确的程序化像素采样验证
+- 调色板验证: eval 采样 canvas, 13/14 目标色命中(泥土 base/dark/light、石头 base/dark、草 main/bright/dark、玩家 skin/hair/pants、trunk、leaf; stone_light #adb8cd 当前视口未出现)
+- 传送验证: 通过 window.__game 引擎对象 + world.isSolid 搜索 3×3 气腔实时传送(修正: 坐标是像素单位, 首次误传 y=187px 到天上)
+- 黄金路径: 走路(KeyD 266px)✓ 挖掘(铜镐挖泥土, 方块 1→0, 掉落物拾取入背包)✓
+- 排障记录: 挖掘初次"失败"实为手持火把(放置类); E 键需 window+key:'e' 属性(React 层监听), 引擎层 code 即可
+- UI: 背包开合正常, 新图标系统渲染正常
+- 截图存档: agent-ctx/10_check_game.png, 10c_surface.png, 10c_cave_real.png, 10c_cave_torch.png, 10d_surface_final.png, 10d_inventory.png
+
+Stage Summary:
+- 视觉重构三件套(textures/sprites/render)全部完成并实测通过
+- 剩余: 10-e 单文件版重建 + GitHub 推送
