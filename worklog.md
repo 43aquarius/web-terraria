@@ -440,3 +440,17 @@ Work Log:
 
 Stage Summary:
 - 9 系列全部完成, 进入 9-i git 提交推送
+
+---
+Task ID: 9-i
+Agent: main
+Task: GitHub 提交推送
+
+Work Log:
+- 提交 f2a74ed "feat: 大版本内容升级 — 六大群系世界 + Boss战 + 盔甲系统 + 全屏地图 + 单文件版同步" (含完整变更说明)
+- 推送至 https://github.com/43aquarius/web-terraria main 分支成功 (d2d966e..f2a74ed)
+- 排除项: agent-ctx 截图/VLM json 等测试产物不入库
+
+Stage Summary:
+- 9 系列全部完成: 9-0/9-1 契约 → 9-a/b/c/d 并行(世界/贴图/实体/音频) → 9-e 引擎 → 9-f/9-g 渲染UI → 9-h 单文件 → 9-int 集成验证+关键Boss修复 → 9-i 推送
+- 交付物: Next.js 版(/) + 单文件版(/terraria.html, 336KB) 双形态, 同一引擎同一存档
