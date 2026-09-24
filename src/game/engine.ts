@@ -1,33 +1,48 @@
 /**
- * 游戏主引擎：主循环 / 输入 / 挖掘放置战斗 / 敌怪生成 / 背包合成 / 存档 / 小地图
+ * 游戏主引擎：主循环 / 输入 / 挖掘放置战斗 / 宝箱 / 门 / 盔甲 / 投射物 /
+ * 克苏鲁之眼 Boss / 向导 NPC / 分层群系刷怪 / 智能光标 / 全屏地图 / 存档 v2
  * 渲染拆分到 render.ts
  */
 
 import {
   T, TileDefs, ItemDefs, RECIPES, IT, FURNITURE_SHAPE,
-  PLAYER_CONF, ENEMY_DEFS,
-  REACH, CYCLE, DAY_END, SAVE_KEY, MAX_HP,
+  PLAYER_CONF, ENEMY_DEFS, GUIDE_LINES,
+  REACH, CYCLE, DAY_END, SAVE_KEY, SAVE_KEY_V1, MAX_HP, HP_CAP,
+  WORLD_SIZES, CHEST_LOOT, BIOME, BIOME_NAMES,
+  type WorldSize, type ArmorSlot,
 } from './constants';
 import { World } from './world';
-import { getTextures, type GameTextures } from './textures';
+import { getTextures, mulberry32, type GameTextures } from './textures';
 import { makeRegion, computeLight, type LightRegion, type ExtraLight } from './lighting';
 import type { SkyState } from './sky';
 import {
   mkPlayer, updatePlayer, spawnEnemy, updateEnemy,
-  mkDrop, updateDrop, burst,
+  mkDrop, updateDrop, burst, mkGuide, updateGuide,
+  mkArrow, mkBomb, updateProj, bodyInLava, bodyInWater, tileAt, moveBody,
   type Player, type Enemy, type EnemyKind, type Drop, type Particle, type DmgNum, type Body,
+  type Guide, type Proj, type PlayerEvents,
 } from './entities';
-import { SFX } from './sound';
-import { ui, type Slot } from './store';
+import { SFX, Music } from './sound';
+import { ui, type Slot, type UIArmor } from './store';
 import { renderGame } from './render';
 
 export type Screen = 'title' | 'playing' | 'dead';
+
+/** 盔甲三槽(head/body/legs)状态, 与 UIState.armor 同构 */
+export type ArmorState = UIArmor;
+
+/** 带 armor 扩展的 Player(engine 侧自行扩展, 不动 entities.ts) */
+type ArmoredPlayer = Player & { armor: ArmorState };
+
+/** 树苗(橡子种下后登记, 到期尝试长成树) */
+interface Sapling { x: number; y: number; t: number; due: number }
 
 /** React UI 可调用的引擎 API(单例) */
 export interface EngineAPI {
   enterWorld(): void;
   continueGame(): void;
   regenerate(): void;
+  newWorld(size: WorldSize, seedStr: string, playerName: string, dev: boolean): void;
   quitToTitle(): void;
   saveGame(): boolean;
   toggleInventory(): void;
@@ -37,14 +52,26 @@ export interface EngineAPI {
   toggleMute(): void;
   craft(index: number): void;
   clickSlot(i: number, right: boolean): void;
+  clickChestSlot(i: number, right: boolean): void;
+  clickArmorSlot(slot: ArmorSlot, right: boolean): void;
+  toggleMap(): void;
+  toggleSmart(): void;
+  closeChest(): void;
 }
 
 const ZOOM = 2;
 const FIXED = 1000 / 60;
 const TITLE_DAY_T = 0.545;         // 标题屏定格黄昏
-const MAX_ENEMIES_DAY = 4;
-const MAX_ENEMIES_NIGHT = 8;
+const MAX_ENEMIES_DAY = 4;         // 地表白天上限
+const MAX_ENEMIES_NIGHT = 8;       // 地表夜晚上限
+const MAX_ENEMIES_CAVE = 5;        // 洞穴上限
+const MAX_ENEMIES_HELL = 4;        // 地狱上限
 const AUTOSAVE_FRAMES = 60 * 30;
+const CHEST_SLOTS = 20;            // 宝箱容量
+const SAPLING_MIN = 900;           // 树苗最快成树帧数
+const SAPLING_RND = 300;
+const MAP_EXPLORE_R = 42;          // 探索半径(格)
+const BOMB_DMG = 60;               // 爆炸基础伤害(同 ItemDefs[BOMB].dmg)
 
 function clamp(v: number, a: number, b: number): number { return v < a ? a : v > b ? b : v; }
 
@@ -55,6 +82,38 @@ function skyLightAt(dayT: number): number {
   if (dayT < DAY_END) return 1 - ((dayT - 0.5) / (DAY_END - 0.5)) * 0.72;
   if (dayT < 0.9) return 0.28;
   return 0.28 + ((dayT - 0.9) / 0.1) * 0.27;
+}
+
+/** FNV-1a 32位字符串哈希 → 数字种子 */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+}
+
+/** 0/1 位图 RLE: [0游程,1游程,0游程,...] */
+function rleBits(a: Uint8Array): number[] {
+  const runs: number[] = [];
+  let cur = 0, n = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === cur) n++;
+    else { runs.push(n); cur ^= 1; n = 1; }
+  }
+  runs.push(n);
+  return runs;
+}
+function unrleBits(runs: number[], len: number): Uint8Array {
+  const a = new Uint8Array(len);
+  let p = 0, cur = 0;
+  for (const n of runs) {
+    if (cur) a.fill(1, p, Math.min(len, p + n));
+    p += n; cur ^= 1;
+    if (p >= len) break;
+  }
+  return a;
 }
 
 interface PickupAgg { id: number; count: number; until: number; msgId: number }
@@ -77,7 +136,7 @@ export class GameEngine {
   zoom = ZOOM;
   world!: World;
   tex!: GameTextures;
-  player!: Player;
+  player!: ArmoredPlayer;
   enemies: Enemy[] = [];
   drops: Drop[] = [];
   parts: Particle[] = [];
@@ -99,6 +158,26 @@ export class GameEngine {
   titleT = 0;
   mmCanvas: HTMLCanvasElement | null = null;
 
+  // ==================== 9-e 新增公共状态(render/HUD 读取) ====================
+  projs: Proj[] = [];                       // 投射物(箭/炸弹)
+  guide: Guide | null = null;               // 向导 NPC
+  guideLine = '';                           // 向导当前台词
+  guideLineUntil = 0;                       // 台词过期帧(g.frame < guideLineUntil 时显示气泡)
+  boss: Enemy | null = null;                // 克苏鲁之眼(同时也是 enemies 成员)
+  smart = false;                            // 智能光标开关(C)
+  smartTarget: { gx: number; gy: number } | null = null;  // 智能挖掘目标格
+  smartPlace: { gx: number; gy: number } | null = null;   // 智能放置目标格(命中实心前最后一个 AIR)
+  mapOpen = false;                          // 全屏地图开关(Tab)
+  explored!: Uint8Array;                    // 探索掩码(w*h, 1=已探索)
+  mapCanvas: HTMLCanvasElement | null = null; // 全屏地图离屏画布(w*h, 1px=1格)
+  chestOpen: number | null = null;          // 打开的宝箱主格(CHEST_TL) tileIdx
+  chestContents = new Map<number, (Slot | null)[]>(); // 宝箱战利品(key=主格 tileIdx)
+  saplings: Sapling[] = [];                 // 已种树苗
+  devMode = false;                          // 开发模式(newWorld 参数)
+  devFly = false;                           // dev 模式按住 F 飞行(每帧刷新)
+  playerName = '泰拉行者';
+  seedStr = '';                             // 创建世界时的种子字符串
+
   private lightReg: LightRegion = makeRegion();
   private keys = new Set<string>();
   private mineTarget: number | null = null;
@@ -106,7 +185,7 @@ export class GameEngine {
   private useCooldown = 0;
   private spawnTimer = 120;
   private autosaveTimer = AUTOSAVE_FRAMES;
-  private stationCache: Record<string, boolean> = { workbench: false, furnace: false, anvil: false };
+  private stationCache: Record<string, boolean> = { workbench: false, furnace: false, anvil: false, altar: false };
   private stationFrame = -999;
   private pickupAgg = new Map<number, PickupAgg>();
   private msgSeq = 1;
@@ -120,6 +199,14 @@ export class GameEngine {
   private noPickup = new Map<number, number>(); // drop 引用暂用 index 标记
   private mmImg: ImageData | null = null;
   private mmColors: [number, number, number, number][] = [];
+  private mapImg: ImageData | null = null;
+  private mapDirty = new Set<number>();
+  private rightWas = false;      // 右键边沿检测(上一 tick 状态)
+  private wasNight = false;      // 音乐场景切换监测
+  private bossPhaseWas = 0;      // Boss 阶段跳变监测
+  private bossHitTally = 0;      // Boss 受击计数(每 6 次 bossHit 音效)
+  private lastMinPowerMsg = -999; // "镐力不足" 消息节流
+  private lastNoArrowMsg = -999;  // "没有箭了" 消息节流
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -133,7 +220,7 @@ export class GameEngine {
     (window as unknown as Record<string, unknown>).__game = this; // 调试后门
     this.mounted = true;
     this.tex = getTextures();
-    this.buildMinimapColors();
+    this.buildTileColors();
 
     this.ro = new ResizeObserver(() => this.resize());
     this.ro.observe(this.canvas.parentElement ?? this.canvas);
@@ -145,7 +232,8 @@ export class GameEngine {
     this.canvas.addEventListener('mouseleave', this.onMouseUp);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false });
     this.canvas.addEventListener('contextmenu', this.onCtxMenu);
-    window.addEventListener('keydown', this.onKeyDown);
+    // capture 阶段监听: Tab(地图)/Esc(关地图/关宝箱) 需要 HUD 不再重复处理
+    window.addEventListener('keydown', this.onKeyDown, true);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('beforeunload', this.onUnload);
@@ -154,7 +242,7 @@ export class GameEngine {
     ui.set({ loading: true, loadingText: '正在生成世界…' });
     setTimeout(() => {
       this.initWorld(Math.floor(Math.random() * 1e9));
-      ui.set({ loading: false, hasSave: !!localStorage.getItem(SAVE_KEY) });
+      ui.set({ loading: false, hasSave: this.hasSaveData() });
     }, 50);
 
     this.lastTs = performance.now();
@@ -171,7 +259,7 @@ export class GameEngine {
     this.canvas.removeEventListener('mouseleave', this.onMouseUp);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.canvas.removeEventListener('contextmenu', this.onCtxMenu);
-    window.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('keydown', this.onKeyDown, true);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('beforeunload', this.onUnload);
@@ -187,26 +275,121 @@ export class GameEngine {
     this.ctx.imageSmoothingEnabled = false;
   }
 
-  // ==================== 世界 ====================
+  // ==================== 世界创建 ====================
+
+  /** 旧入口: 小世界 + 数字种子(标题屏默认/兼容旧路径) */
   initWorld(seed: number): void {
-    this.world = new World(seed);
+    this.setupWorld(new World(seed), '', '泰拉行者', false, false);
+  }
+
+  /** 新入口: 按尺寸/种子串/玩家名/dev 创建世界(9-g 标题屏表单调用) */
+  newWorld(size: WorldSize, seedStr: string, playerName: string, dev: boolean): void {
+    const seed = seedStr ? fnv1a(seedStr) : Math.floor(Math.random() * 1e9);
+    const sz = WORLD_SIZES[size] ?? WORLD_SIZES.small;
+    this.screen = 'title';
+    this.paused = false;
+    this.invOpen = false;
+    this.setupWorld(new World(seed, sz.w, sz.h), seedStr, playerName.trim() || '泰拉行者', dev, true);
+    this.uiDirty = true;
+    this.syncUI(true);
+  }
+
+  /** 世界通用装配: 玩家/向导/宝箱战利品/探索地图/相机 */
+  private setupWorld(world: World, seedStr: string, playerName: string, dev: boolean, starter: boolean): void {
+    this.world = world;
     this.world.onTileChanged = (x, y) => this.onTileChanged(x, y);
-    this.player = mkPlayer(this.world.spawnX, this.world.spawnY);
+    this.seedStr = seedStr;
+    this.playerName = playerName;
+    this.devMode = dev;
+    this.smart = false;
+    this.devFly = false;
+    this.player = mkPlayer(world.spawnX, world.spawnY) as ArmoredPlayer;
+    this.player.armor = { head: null, body: null, legs: null };
     this.enemies = [];
     this.drops = [];
     this.parts = [];
     this.dmgs = [];
     this.ambient = [];
+    this.projs = [];
+    this.boss = null;
+    this.bossPhaseWas = 0;
+    this.bossHitTally = 0;
+    this.guide = mkGuide(world.spawnX + 40, world.spawnY);
+    this.guideLine = '';
+    this.guideLineUntil = 0;
+    this.saplings = [];
+    this.chestContents = new Map();
+    this.chestOpen = null;
+    this.mapOpen = false;
     this.mineDamage.clear();
     this.mineTarget = null;
+    this.explored = new Uint8Array(world.w * world.h);
     this.timeSec = 0;
     this.titleT = 0;
+    this.wasNight = false;
+    this.rightWas = false;
+    this.lastMinPowerMsg = -999;
+    this.lastNoArrowMsg = -999;
+    this.genChestLoot();
+    if (starter) this.giveStarterItems();
     this.buildMinimap();
-    this.camX = this.world.spawnX - this.viewW() / 2;
+    this.buildMapCanvas();
+    this.markExplored(Math.floor(world.spawnX / 16), Math.floor(world.spawnY / 16));
+    this.camX = world.spawnX - this.viewW() / 2;
     this.camY = this.surfaceYpx() - this.viewH() * 0.72;
     this.clampCam();
     this.uiDirty = true;
     this.syncUI(true);
+  }
+
+  /** 初始物品: 铜镐/铜斧/铜短剑 + 火把×10 */
+  private giveStarterItems(): void {
+    if (this.player.inv.some((s) => s)) return;
+    this.player.inv[0] = { id: IT.COPPER_PICK, count: 1 };
+    this.player.inv[1] = { id: IT.COPPER_AXE, count: 1 };
+    this.player.inv[2] = { id: IT.COPPER_SWORD, count: 1 };
+    this.player.inv[3] = { id: IT.TORCH, count: 10 };
+    this.uiDirty = true;
+  }
+
+  /** 宝箱战利品确定性初始化: mulberry32(seed ^ (i*2654435761)) 抽 2-4 项 */
+  private genChestLoot(): void {
+    this.chestContents.clear();
+    const spawns = this.world.chestSpawns;
+    for (let i = 0; i < spawns.length; i++) {
+      const cs = spawns[i];
+      const rng = mulberry32((this.world.seed ^ Math.imul(i, 2654435761)) | 0);
+      const table = CHEST_LOOT[cs.tier] ?? CHEST_LOOT.surface;
+      const slots: (Slot | null)[] = new Array(CHEST_SLOTS).fill(null);
+      let n = 0;
+      for (let round = 0; round < 24 && n < 2; round++) {
+        for (const entry of table) {
+          if (n >= 4) break;
+          if (rng() < entry.chance) {
+            const count = entry.min + Math.floor(rng() * (entry.max - entry.min + 1));
+            if (count > 0) slots[n++] = { id: entry.id, count };
+          }
+        }
+      }
+      this.chestContents.set(this.world.idx(cs.x, cs.y), slots);
+    }
+  }
+
+  /** 读档后按世界 tile 重建树苗登记表 */
+  private rebuildSaplings(): void {
+    this.saplings = [];
+    const t = this.world.tiles, w = this.world.w;
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === T.SAPLING) this.saplings.push({ x: i % w, y: (i / w) | 0, t: 0, due: SAPLING_MIN + Math.random() * SAPLING_RND });
+    }
+  }
+
+  private hasSaveData(): boolean {
+    try {
+      return !!(localStorage.getItem(SAVE_KEY) || localStorage.getItem(SAVE_KEY_V1));
+    } catch {
+      return false;
+    }
   }
 
   viewW(): number { return this.vw / this.zoom; }
@@ -235,14 +418,12 @@ export class GameEngine {
 
   private onMouseDown = (e: MouseEvent): void => {
     SFX.init();
+    Music.start();
     const r = this.canvas.getBoundingClientRect();
     this.mouse.x = e.clientX - r.left;
     this.mouse.y = e.clientY - r.top;
     if (e.button === 0) this.mouse.left = true;
     if (e.button === 2) this.mouse.right = true;
-    if (this.invOpen && this.screen === 'playing') {
-      // 背包打开时点击画布区域不触发使用
-    }
   };
   private onMouseUp = (e: MouseEvent): void => {
     if (e.button === 0) this.mouse.left = false;
@@ -267,11 +448,31 @@ export class GameEngine {
     this.keys.add(e.code);
     if (e.code === 'Space') e.preventDefault();
     SFX.init();
+    Music.start();
+    if (this.screen !== 'playing') return;
+    // Tab = 全屏地图(HUD 旧绑定会重复开背包, 用 stopPropagation 拦截, 9-g 会移除 HUD 侧绑定)
+    if (e.code === 'Tab') {
+      e.preventDefault();
+      this.toggleMap();
+      e.stopPropagation();
+      return;
+    }
+    // Esc 优先级: 地图 > 宝箱 > (背包/暂停, 由 HUD 处理)
+    if (e.code === 'Escape') {
+      if (this.mapOpen) { this.toggleMap(); e.stopPropagation(); return; }
+      if (this.chestOpen !== null) { this.closeChest(); e.stopPropagation(); return; }
+      return;
+    }
+    if (e.code === 'KeyC') { this.toggleSmart(); return; }
+    if (this.devMode && !this.paused) {
+      if (e.code === 'KeyG') { this.devSpawn(); return; }
+      if (e.code === 'KeyN') { this.devTime(); return; }
+    }
   };
   private onKeyUp = (e: KeyboardEvent): void => { this.keys.delete(e.code); };
 
   private moveInput() {
-    const canMove = this.screen === 'playing' && !this.paused;
+    const canMove = this.screen === 'playing' && !this.paused && !this.mapOpen;
     return {
       left: canMove && (this.keys.has('KeyA') || this.keys.has('ArrowLeft')),
       right: canMove && (this.keys.has('KeyD') || this.keys.has('ArrowRight')),
@@ -283,17 +484,16 @@ export class GameEngine {
   // ==================== API ====================
   enterWorld(): void {
     SFX.init();
+    Music.start();
     this.screen = 'playing';
     this.timeSec = CYCLE * 0.06;      // 清晨
     this.enemies = [];
     this.drops = [];
-    // 初始装备：铜镐 / 铜斧 / 铜短剑(泰拉瑞亚新角色标配)
-    if (!this.player.inv.some((s) => s)) {
-      this.player.inv[0] = { id: IT.COPPER_PICK, count: 1 };
-      this.player.inv[1] = { id: IT.COPPER_AXE, count: 1 };
-      this.player.inv[2] = { id: IT.COPPER_SWORD, count: 1 };
-    }
-    this.msg('欢迎来到泰拉瑞亚！砍树挖矿，打造装备吧。', '#f7d060');
+    // 初始装备：铜镐 / 铜斧 / 铜短剑 + 火把×10(泰拉瑞亚新角色标配)
+    this.giveStarterItems();
+    this.wasNight = false;
+    Music.setScene('day');
+    this.msg(`欢迎来到泰拉瑞亚, ${this.playerName}！砍树挖矿，打造装备吧。`, '#f7d060');
     this.uiDirty = true;
     this.syncUI(true);
   }
@@ -309,36 +509,91 @@ export class GameEngine {
 
   continueGame(): void {
     SFX.init();
+    Music.start();
+    let raw: string | null = null;
+    let legacy = false;
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) { this.msg('没有找到存档', '#e07070'); return; }
-      const o = JSON.parse(raw) as {
-        world: string; p: { x: number; y: number; hp: number; inv: (Slot | null)[]; hotbar: number }; t: number;
-      };
-      this.world = World.decode(o.world);
-      this.world.onTileChanged = (x, y) => this.onTileChanged(x, y);
-      this.player = mkPlayer(o.p.x, o.p.y);
-      this.player.hp = o.p.hp;
-      this.player.inv = o.p.inv;
-      this.player.hotbar = o.p.hotbar;
-      this.timeSec = o.t;
-      this.enemies = [];
-      this.drops = [];
-      this.parts = [];
-      this.dmgs = [];
-      this.ambient = [];
-      this.mineDamage.clear();
-      this.screen = 'playing';
-      this.buildMinimap();
-      this.camX = this.player.x - this.viewW() / 2;
-      this.camY = this.player.y - this.viewH() * 0.6;
-      this.clampCam();
-      this.msg('欢迎回来！', '#8ee88e');
-      this.uiDirty = true;
-      this.syncUI(true);
+      raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) { raw = localStorage.getItem(SAVE_KEY_V1); legacy = true; }
+    } catch { raw = null; }
+    if (!raw) { this.msg('没有找到存档', '#e07070'); return; }
+    try {
+      const o = JSON.parse(raw) as Record<string, unknown>;
+      if (legacy || o.v === 1) this.loadSave(o, true);
+      else this.loadSave(o, false);
     } catch {
       this.msg('存档读取失败', '#e07070');
     }
+  }
+
+  /** 存档落地(v2 直读 / v1 迁移) */
+  private loadSave(o: Record<string, unknown>, legacy: boolean): void {
+    const worldStr = o.world as string;
+    const po = o.p as { x: number; y: number; hp: number; maxHp?: number; inv?: (Slot | null)[]; hotbar?: number; armor?: UIArmor; name?: string };
+    const world = World.decode(worldStr);
+    this.world = world;
+    this.world.onTileChanged = (x, y) => this.onTileChanged(x, y);
+    this.seedStr = typeof o.seedStr === 'string' ? o.seedStr : '';
+    this.playerName = (po?.name ?? '泰拉行者') || '泰拉行者';
+    this.devMode = legacy ? false : !!o.devMode;
+    this.smart = legacy ? false : !!o.smart;
+    this.devFly = false;
+
+    this.player = mkPlayer(po.x, po.y) as ArmoredPlayer;
+    const maxHp = legacy ? MAX_HP : clamp(po.maxHp ?? MAX_HP, MAX_HP, HP_CAP);
+    this.player.maxHp = maxHp;
+    this.player.hp = clamp(po.hp ?? maxHp, 1, maxHp);
+    this.player.inv = Array.from({ length: 40 }, (_, i) => po.inv?.[i] ?? null);
+    this.player.hotbar = clamp(po.hotbar ?? 0, 0, 9);
+    this.player.armor = legacy || !po.armor ? { head: null, body: null, legs: null } : po.armor;
+
+    this.timeSec = typeof o.t === 'number' ? o.t : 0;
+    this.enemies = [];
+    this.drops = [];
+    this.parts = [];
+    this.dmgs = [];
+    this.ambient = [];
+    this.projs = [];
+    this.boss = null;
+    this.bossPhaseWas = 0;
+    this.bossHitTally = 0;
+    this.guide = mkGuide(world.spawnX + 40, world.spawnY);
+    this.guideLine = '';
+    this.guideLineUntil = 0;
+    this.mineDamage.clear();
+    this.mineTarget = null;
+    this.mapOpen = false;
+    this.chestOpen = null;
+
+    if (legacy) {
+      // v1 迁移: 宝箱按 chestSpawns 重新确定性生成, 探索仅标记出生点
+      this.chestContents = new Map();
+      this.genChestLoot();
+      this.explored = new Uint8Array(world.w * world.h);
+      this.markExplored(Math.floor(world.spawnX / 16), Math.floor(world.spawnY / 16));
+    } else {
+      const chests = o.chests as [number, (Slot | null)[]][] | undefined;
+      this.chestContents = new Map(chests ?? []);
+      const runs = o.explored as number[] | undefined;
+      this.explored = runs && runs.length ? unrleBits(runs, world.w * world.h) : new Uint8Array(world.w * world.h);
+      if (this.explored.length !== world.w * world.h) {
+        this.explored = new Uint8Array(world.w * world.h);
+        this.markExplored(Math.floor(world.spawnX / 16), Math.floor(world.spawnY / 16));
+      }
+    }
+    this.rebuildSaplings();
+
+    this.screen = 'playing';
+    this.buildMinimap();
+    this.buildMapCanvas();
+    this.camX = this.player.x - this.viewW() / 2;
+    this.camY = this.player.y - this.viewH() * 0.6;
+    this.clampCam();
+    this.wasNight = this.isNight();
+    Music.setScene(this.wasNight ? 'night' : 'day');
+    this.msg(legacy ? '已迁移旧存档, 欢迎回来！' : '欢迎回来！', '#8ee88e');
+    this.uiDirty = true;
+    this.syncUI(true);
   }
 
   quitToTitle(): void {
@@ -348,6 +603,9 @@ export class GameEngine {
     this.titleT = 0;
     this.paused = false;
     this.invOpen = false;
+    this.mapOpen = false;
+    if (this.chestOpen !== null) this.closeChest();
+    Music.setScene('title');
     this.uiDirty = true;
     this.syncUI(true);
   }
@@ -358,13 +616,20 @@ export class GameEngine {
     if (!this.world || this.screen === 'title') return false;
     try {
       const data = JSON.stringify({
-        v: 1,
+        v: 2,
         world: this.world.encode(),
         p: {
-          x: this.player.x, y: this.player.y, hp: this.player.hp,
+          x: this.player.x, y: this.player.y,
+          hp: this.player.hp, maxHp: this.player.maxHp,
           inv: this.player.inv, hotbar: this.player.hotbar,
+          armor: this.player.armor, name: this.playerName,
         },
         t: this.timeSec,
+        seedStr: this.seedStr,
+        chests: Array.from(this.chestContents.entries()),
+        explored: rleBits(this.explored),
+        devMode: this.devMode,
+        smart: this.smart,
       });
       localStorage.setItem(SAVE_KEY, data);
       ui.set({ hasSave: true });
@@ -376,7 +641,15 @@ export class GameEngine {
 
   toggleInventory(): void {
     if (this.screen !== 'playing') return;
+    // 背包键 E: 宝箱开着时优先关宝箱
+    if (this.chestOpen !== null) { this.closeChest(); return; }
     this.invOpen = !this.invOpen;
+    this.returnCursorToInv();
+    this.uiDirty = true;
+  }
+
+  /** 关闭面板时把光标物品放回背包(放不下则掉落) */
+  private returnCursorToInv(): void {
     if (!this.invOpen && this.player.cursorItem) {
       const rest = this.addItem(this.player.cursorItem.id, this.player.cursorItem.count);
       if (rest > 0) {
@@ -385,7 +658,6 @@ export class GameEngine {
       }
       this.player.cursorItem = null;
     }
-    this.uiDirty = true;
   }
 
   togglePause(): void {
@@ -410,8 +682,24 @@ export class GameEngine {
 
   toggleMute(): void {
     SFX.init();
+    Music.start();
     const m = SFX.toggleMute();
     ui.set({ muted: m });
+  }
+
+  /** Tab: 全屏地图开关(打开时输入/挖掘暂停, 世界继续渲染) */
+  toggleMap(): void {
+    if (this.screen !== 'playing') return;
+    this.mapOpen = !this.mapOpen;
+    if (this.mapOpen) { this.mouse.left = false; this.mouse.right = false; }
+    this.uiDirty = true;
+  }
+
+  /** C: 智能光标开关 */
+  toggleSmart(): void {
+    if (this.screen !== 'playing') return;
+    this.smart = !this.smart;
+    this.uiDirty = true;
   }
 
   craft(index: number): void {
@@ -423,28 +711,83 @@ export class GameEngine {
     const rest = this.addItem(r.out, r.count);
     if (rest > 0) this.drops.push(mkDrop(r.out, rest, this.player.x, this.player.y - 20));
     SFX.craft();
+    if (r.station === 'altar') SFX.altar();
     const def = ItemDefs[r.out];
     this.msg(`合成了 ${def.name}${r.count > 1 ? ` ×${r.count}` : ''}`, '#8ee88e');
     this.uiDirty = true;
   }
 
+  // ==================== 槽位点击(背包/宝箱/盔甲) ====================
+
+  /** 背包槽点击(左键点击盔甲物品 = 直接穿戴) */
   clickSlot(i: number, right: boolean): void {
     if (this.screen !== 'playing') return;
     const p = this.player;
     const slot = p.inv[i];
+    if (!right && slot && ItemDefs[slot.id]?.kind === 'armor') {
+      const adef = ItemDefs[slot.id];
+      const as = adef.armorSlot;
+      if (as) {
+        const old = p.armor[as];
+        p.armor[as] = slot;
+        p.inv[i] = old ?? null; // 旧盔甲回到该槽位
+        SFX.click();
+        this.uiDirty = true;
+        return;
+      }
+    }
+    this.clickSlotIn(p.inv, i, right);
+    SFX.click();
+    this.uiDirty = true;
+  }
+
+  /** 宝箱槽点击(与 clickSlot 同语义, 在宝箱与光标之间搬运) */
+  clickChestSlot(i: number, right: boolean): void {
+    if (this.screen !== 'playing' || this.chestOpen === null) return;
+    const arr = this.chestContents.get(this.chestOpen);
+    if (!arr || i < 0 || i >= arr.length) return;
+    this.clickSlotIn(arr, i, right);
+    SFX.click();
+    this.uiDirty = true;
+  }
+
+  /** 盔甲槽点击: 空手取出 / 放入类型匹配的盔甲(与光标交换) */
+  clickArmorSlot(slot: ArmorSlot, right: boolean): void {
+    void right; // 盔甲 maxStack=1, 左右键语义一致
+    if (this.screen !== 'playing') return;
+    const p = this.player;
+    const cur = p.cursorItem;
+    const old = p.armor[slot];
+    if (!cur) {
+      if (old) { p.cursorItem = old; p.armor[slot] = null; }
+    } else {
+      const def = ItemDefs[cur.id];
+      if (def?.kind === 'armor' && def.armorSlot === slot) {
+        p.armor[slot] = cur;
+        p.cursorItem = old; // 旧盔甲回到光标(可能为 null)
+      }
+    }
+    SFX.click();
+    this.uiDirty = true;
+  }
+
+  /** 通用槽位交换语义(拿起/放下/右键取半/同类合并) */
+  private clickSlotIn(arr: (Slot | null)[], i: number, right: boolean): void {
+    const p = this.player;
+    const slot = arr[i];
     const cur = p.cursorItem;
     if (!right) {
       if (!cur) {
-        if (slot) { p.cursorItem = slot; p.inv[i] = null; }
+        if (slot) { p.cursorItem = slot; arr[i] = null; }
       } else if (!slot) {
-        p.inv[i] = cur; p.cursorItem = null;
+        arr[i] = cur; p.cursorItem = null;
       } else if (slot.id === cur.id && ItemDefs[slot.id]) {
         const max = ItemDefs[slot.id].maxStack;
         const move = Math.min(max - slot.count, cur.count);
         slot.count += move; cur.count -= move;
         if (cur.count <= 0) p.cursorItem = null;
       } else {
-        p.inv[i] = cur; p.cursorItem = slot;
+        arr[i] = cur; p.cursorItem = slot;
       }
     } else {
       if (!cur) {
@@ -452,10 +795,10 @@ export class GameEngine {
           const half = Math.ceil(slot.count / 2);
           p.cursorItem = { id: slot.id, count: half };
           slot.count -= half;
-          if (slot.count <= 0) p.inv[i] = null;
+          if (slot.count <= 0) arr[i] = null;
         }
       } else if (!slot) {
-        p.inv[i] = { id: cur.id, count: 1 };
+        arr[i] = { id: cur.id, count: 1 };
         cur.count--;
         if (cur.count <= 0) p.cursorItem = null;
       } else if (slot.id === cur.id && slot.count < ItemDefs[slot.id].maxStack) {
@@ -463,8 +806,17 @@ export class GameEngine {
         if (cur.count <= 0) p.cursorItem = null;
       }
     }
-    SFX.click();
-    this.uiDirty = true;
+  }
+
+  /** 三件盔甲防御之和 */
+  defense(): number {
+    const a = this.player?.armor;
+    if (!a) return 0;
+    let d = 0;
+    if (a.head) d += ItemDefs[a.head.id]?.defense ?? 0;
+    if (a.body) d += ItemDefs[a.body.id]?.defense ?? 0;
+    if (a.legs) d += ItemDefs[a.legs.id]?.defense ?? 0;
+    return d;
   }
 
   // ==================== 背包 ====================
@@ -520,7 +872,7 @@ export class GameEngine {
     this.stationFrame = this.frame;
     const p = this.player;
     const gx = Math.floor(p.x / 16), gy = Math.floor(p.y / 16);
-    const st = { workbench: false, furnace: false, anvil: false };
+    const st = { workbench: false, furnace: false, anvil: false, altar: false };
     for (let dy = -3; dy <= 3; dy++) {
       for (let dx = -4; dx <= 4; dx++) {
         const s = TileDefs[this.world.get(gx + dx, gy + dy)].station;
@@ -575,15 +927,18 @@ export class GameEngine {
       this.tickTitleCam();
       this.world.tickWater(80);
       this.tickParticles();
+      this.flushMap();
       return;
     }
 
     if (this.player.dead) {
       this.tickDead();
+      this.flushMap();
       return;
     }
 
     if (!this.paused) this.tickGame();
+    this.flushMap();
     this.syncUI(false);
   }
 
@@ -608,21 +963,23 @@ export class GameEngine {
     this.tickParticles();
     this.dmgs = this.dmgs.filter((d) => --d.life > 0);
     for (const e of this.enemies) updateEnemy(this.world, e, p.x, p.y, this.isNight(), this.frame);
-    this.enemies = this.enemies.filter((e) => !e.dead && Math.hypot(e.x - p.x, e.y - p.y) < 70 * 16);
+    this.enemies = this.enemies.filter((e) => !e.dead && (ENEMY_DEFS[e.kind].boss || Math.hypot(e.x - p.x, e.y - p.y) < 70 * 16));
     if (p.deadTimer <= 0) {
       p.dead = false;
-      p.hp = MAX_HP;
+      p.hp = p.maxHp;
       p.breath = PLAYER_CONF.breathMax;
       p.x = this.world.spawnX;
       p.y = this.world.spawnY;
       p.vx = 0; p.vy = 0;
       p.iframes = 0;
       p.spawnProt = 600;
-      // 清除出生点附近的敌怪,防止"重生即被围杀"的死循环
+      // 清除出生点附近的敌怪,防止"重生即被围杀"的死循环(Boss 豁免 —— Boss 战不应因玩家死亡重生而终结)
       this.enemies = this.enemies.filter(
-        (e) => Math.hypot(e.x - p.x, e.y - p.y) > 20 * 16,
+        (e) => ENEMY_DEFS[e.kind].boss || Math.hypot(e.x - p.x, e.y - p.y) > 20 * 16,
       );
       this.screen = 'playing';
+      this.wasNight = this.isNight();
+      Music.setScene(this.wasNight ? 'night' : 'day');
       this.uiDirty = true;
     }
     this.followCam();
@@ -631,13 +988,20 @@ export class GameEngine {
   private tickGame(): void {
     const p = this.player;
     this.timeSec += 1 / 60;
+    // 音乐场景: 入夜/清晨切换
+    const night = this.isNight();
+    if (night !== this.wasNight) {
+      Music.setScene(night ? 'night' : 'day');
+      this.wasNight = night;
+    }
     if (this.useCooldown > 0) this.useCooldown--;
     if (this.placeCooldown > 0) this.placeCooldown--;
     if (p.swing) { p.swing.t++; if (p.swing.t >= p.swing.dur) p.swing = null; }
+    this.devFly = this.devMode && this.keys.has('KeyF');
 
     // ---- 玩家 ----
     const prevVy = p.vy; // 落地冲击速度 ≈ prevVy + 重力(重力在 updatePlayer 内施加)
-    const ev = updatePlayer(this.world, p, this.moveInput(), this.frame);
+    const ev = this.devFly ? this.tickPlayerFly() : updatePlayer(this.world, p, this.moveInput(), this.frame);
     if (ev.jumped) SFX.jump();
     if (ev.landed) {
       // 落地尘土:速度越快越多;小跳(vy<1.5)不喷;水中落地不喷(另有水花)
@@ -678,11 +1042,34 @@ export class GameEngine {
       p.regenAcc = 0;
     }
 
-    // ---- 使用手中物品 ----
-    if (this.mouse.left && !this.invOpen) this.useHeld();
+    // ---- 岩浆伤害(每 lavaTick 帧一次, 走无敌帧管线自带红闪+震动) ----
+    if (!p.dead && this.frame % PLAYER_CONF.lavaTick === 0 && bodyInLava(this.world, p)) {
+      this.hurtPlayer(PLAYER_CONF.lavaDmg, 0, true);
+      burst(this.parts, p.x, p.y - p.h / 2, '#ff8a40', 6, 2, 0.05);
+    }
+
+    // ---- 智能光标目标 ----
+    if (this.smart) this.computeSmart();
+    else { this.smartTarget = null; this.smartPlace = null; }
+
+    // ---- 使用手中物品(左键: 挖/放/武器) ----
+    if (this.mouse.left && !this.invOpen && !this.mapOpen) this.useHeld();
+
+    // ---- 右键交互(边沿触发: 门 > 宝箱 > 向导 > 使用物品) ----
+    if (this.mouse.right && !this.rightWas && !this.invOpen && !this.mapOpen) this.interactRight();
+    this.rightWas = this.mouse.right;
+
+    // ---- 投射物 ----
+    this.tickProjs();
 
     // ---- 敌怪 ----
     this.tickEnemies();
+
+    // ---- 向导 NPC ----
+    if (this.guide) updateGuide(this.world, this.guide, p.x, this.frame);
+
+    // ---- 树苗生长 ----
+    this.tickSaplings();
 
     // ---- 掉落物 ----
     this.tickDrops();
@@ -693,9 +1080,20 @@ export class GameEngine {
     // ---- 环境生物(蝴蝶/萤火虫) ----
     this.tickAmbient();
 
+    // ---- 宝箱距离检查 ----
+    this.checkChestDistance();
+
     // ---- 世界 ----
     this.world.tickWater(420);
     this.world.tickGrass(26);
+
+    // ---- 探索标记(每 60 帧一次局部圆) ----
+    if (this.frame % 60 === 0) {
+      this.markExplored(
+        clamp(Math.floor(p.x / 16), 0, this.world.w - 1),
+        clamp(Math.floor(p.y / 16), 0, this.world.h - 1),
+      );
+    }
 
     // ---- 生成 ----
     this.tickSpawn();
@@ -709,6 +1107,30 @@ export class GameEngine {
       this.autosaveTimer = AUTOSAVE_FRAMES;
       this.save();
     }
+  }
+
+  /** dev 飞行(F 按住): 无重力, W/S ±3.0 升降, A/D ×1.6 */
+  private tickPlayerFly(): PlayerEvents {
+    const p = this.player;
+    const ev: PlayerEvents = { fell: 0, jumped: false, splash: false, landed: false };
+    p.wasInWater = p.inWater;
+    p.inWater = bodyInWater(this.world, p);
+    p.headWater = tileAt(this.world, p.x, p.y - p.h + 6) === T.WATER;
+    const canMove = !this.paused && !this.mapOpen;
+    const left = canMove && (this.keys.has('KeyA') || this.keys.has('ArrowLeft'));
+    const right = canMove && (this.keys.has('KeyD') || this.keys.has('ArrowRight'));
+    const up = canMove && (this.keys.has('KeyW') || this.keys.has('Space') || this.keys.has('ArrowUp'));
+    const down = canMove && (this.keys.has('KeyS') || this.keys.has('ArrowDown'));
+    const spd = PLAYER_CONF.runSpeed * 1.6;
+    if (left && !right) { p.vx = Math.max(-spd, p.vx - 0.6); p.dir = -1; }
+    else if (right && !left) { p.vx = Math.min(spd, p.vx + 0.6); p.dir = 1; }
+    else { p.vx *= p.onGround ? 0.55 : 0.92; if (Math.abs(p.vx) < 0.04) p.vx = 0; }
+    p.vy = up ? -3.0 : down ? 3.0 : 0;
+    p.fallStart = null; // 飞行不计摔落
+    moveBody(this.world, p, { platforms: true, dropThrough: down && !up, stepUp: true });
+    if (p.onGround && Math.abs(p.vx) > 0.3) p.walkT += 0.16 + Math.abs(p.vx) * 0.06;
+    else if (p.onGround) p.walkT = 0;
+    return ev;
   }
 
   private followCam(): void {
@@ -795,31 +1217,71 @@ export class GameEngine {
     }
   }
 
-  // ==================== 使用物品 ====================
+  // ==================== 使用物品(左键) ====================
   private useHeld(): void {
     const p = this.player;
     const held = p.inv[p.hotbar];
     const def = held ? ItemDefs[held.id] : null;
     const mw = this.getMouseWorld();
-    const gx = Math.floor(mw.x / 16), gy = Math.floor(mw.y / 16);
-    const idx = this.world.idx(clamp(gx, 0, this.world.w - 1), clamp(gy, 0, this.world.h - 1));
+    const mgx = Math.floor(mw.x / 16), mgy = Math.floor(mw.y / 16);
+    // 智能光标开 → 用 ray-march 目标; 关 → 用鼠标格
+    const aim: { gx: number; gy: number } | null = this.smart ? this.smartTarget : { gx: mgx, gy: mgy };
+    const pAim: { gx: number; gy: number } | null = this.smart ? this.smartPlace : { gx: mgx, gy: mgy };
     const pcx = p.x, pcy = p.y - p.h / 2;
-    const inReach = Math.hypot((gx * 16 + 8) - pcx, (gy * 16 + 8) - pcy) <= REACH;
+    const inReach = (a: { gx: number; gy: number }): boolean =>
+      Math.hypot((a.gx * 16 + 8) - pcx, (a.gy * 16 + 8) - pcy) <= REACH;
 
     if (!def || def.kind === 'tool') {
-      // 挖掘(含工具挥砍命中敌人)
+      // 挖掘(含工具挥砍命中敌人); 智能光标无目标时不挥
+      if (this.smart && !aim) return;
       this.doSwing(held?.id ?? 0, def, mw);
-      if (inReach) this.mine(gx, gy, idx, def);
-      else this.mineTarget = null;
+      if (aim && (this.smart || inReach(aim))) {
+        const cx = clamp(aim.gx, 0, this.world.w - 1), cy = clamp(aim.gy, 0, this.world.h - 1);
+        this.mine(cx, cy, this.world.idx(cx, cy), def);
+      } else this.mineTarget = null;
     } else if (def.kind === 'weapon') {
-      this.doSwing(held!.id, def, mw);
       this.mineTarget = null;
+      if (def.ranged === 'arrow') this.shootArrow(held!, mw);
+      else if (def.ranged === 'bomb') this.throwBomb(held!, mw);
+      else this.doSwing(held!.id, def, mw);
     } else if ((def.kind === 'block' || def.kind === 'station') && def.tile !== undefined) {
       this.mineTarget = null;
-      if (this.placeCooldown <= 0 && inReach) this.place(gx, gy, held!, def.tile);
+      if (pAim && this.placeCooldown <= 0 && (this.smart || inReach(pAim))) this.place(pAim.gx, pAim.gy, held!, def.tile);
     } else {
       this.mineTarget = null;
     }
+  }
+
+  /** 射箭(消耗木箭) */
+  private shootArrow(held: Slot, mw: { x: number; y: number }): void {
+    if (this.useCooldown > 0) return;
+    const p = this.player;
+    if (this.countItem(IT.ARROW) <= 0) {
+      if (this.frame - this.lastNoArrowMsg >= 120) {
+        this.lastNoArrowMsg = this.frame;
+        this.msg('没有箭了！', '#e07070');
+      }
+      return;
+    }
+    this.removeItems(IT.ARROW, 1);
+    this.useCooldown = ItemDefs[held.id]?.useTime ?? 24;
+    p.dir = mw.x >= p.x ? 1 : -1;
+    p.swing = { itemId: held.id, t: 0, dur: 12, hits: new Set(), kind: 'arc' };
+    this.projs.push(mkArrow(p.x, p.y - p.h / 2, mw.x, mw.y));
+    SFX.bowShoot();
+  }
+
+  /** 投掷炸弹(消耗 1) */
+  private throwBomb(held: Slot, mw: { x: number; y: number }): void {
+    if (this.useCooldown > 0) return;
+    const p = this.player;
+    this.useCooldown = ItemDefs[held.id]?.useTime ?? 30;
+    p.dir = mw.x >= p.x ? 1 : -1;
+    p.swing = { itemId: held.id, t: 0, dur: 12, hits: new Set(), kind: 'arc' };
+    this.projs.push(mkBomb(p.x, p.y - p.h / 2, mw.x, mw.y));
+    held.count--;
+    if (held.count <= 0) p.inv[p.hotbar] = null;
+    SFX.bombThrow();
   }
 
   /** 挥动(工具/武器视觉 + 命中敌人；空手也有基础挥动) */
@@ -845,11 +1307,12 @@ export class GameEngine {
     }
   }
 
-  /** 挖掘 */
+  /** 挖掘(含 minPower 镐力门槛) */
   private mine(gx: number, gy: number, idx: number, def: { power?: number; tool?: 'pick' | 'axe' } | null): void {
     const id = this.world.get(gx, gy);
     if (id === T.AIR || gy >= this.world.h - 3) { this.mineTarget = null; return; }
     const td = TileDefs[id];
+    if (td.hardness < 0) { this.mineTarget = null; return; } // 水/岩浆/祭坛不可挖
     if (td.hardness <= 0) {
       // 一击碎(草丛/花/火把等)
       this.breakTile(gx, gy);
@@ -858,6 +1321,18 @@ export class GameEngine {
     if (this.mineTarget !== idx) { this.mineTarget = idx; }
     let power = def?.power ?? 3;
     if (def?.tool && td.tool !== 'any' && def.tool !== td.tool) power = Math.max(3, power * 0.25);
+    const need = td.minPower ?? 0;
+    if (power < need) {
+      // 镐力不足: 进度缓慢衰减 + 节流提示
+      const cur = this.mineDamage.get(idx) ?? 0;
+      if (cur > 0.5) this.mineDamage.set(idx, cur * 0.92);
+      else this.mineDamage.delete(idx);
+      if (this.frame - this.lastMinPowerMsg >= 45) {
+        this.lastMinPowerMsg = this.frame;
+        this.msg('镐力不足！', '#e07070');
+      }
+      return;
+    }
     const dmg = (this.mineDamage.get(idx) ?? 0) + power * 0.55;
     if (this.frame % 13 === 0) SFX.dig();
     if (dmg >= td.hardness) {
@@ -880,23 +1355,33 @@ export class GameEngine {
 
     if (id === T.TRUNK) {
       const cells = this.world.fellTree(gx, gy);
-      let woods = 0;
+      let woods = 0, leaves = 0;
       for (const c of cells) {
         if (c.trunk) woods++;
+        else leaves++;
         if (Math.random() < 0.35) burst(this.parts, c.x * 16 + 8, c.y * 16 + 8, '#5cb85c', 2, 1.8, 0.15);
       }
       for (let i = 0; i < woods; i++) {
         this.drops.push(mkDrop(IT.WOOD, 1, gx * 16 + 8 + (Math.random() - 0.5) * 20, gy * 16 + 4));
+      }
+      // 树叶 8% 掉橡子
+      for (let i = 0; i < leaves; i++) {
+        if (Math.random() < 0.08) this.drops.push(mkDrop(IT.ACORN, 1, gx * 16 + 8 + (Math.random() - 0.5) * 24, gy * 16 + 4));
       }
       this.mineDamage.delete(this.world.idx(gx, gy));
       return;
     }
 
     if (td.furnitureGroup) {
+      if (td.furnitureGroup === 'chest') this.spillChestAt(gx, gy);
       const cells = this.world.clearFurniture(gx, gy);
       for (const c of cells) this.mineDamage.delete(this.world.idx(c.x, c.y));
       if (td.drop) this.drops.push(mkDrop(td.drop, 1, gx * 16 + 8, gy * 16 + 8));
       return;
+    }
+
+    if (id === T.SAPLING) {
+      this.saplings = this.saplings.filter((s) => s.x !== gx || s.y !== gy);
     }
 
     this.world.set(gx, gy, T.AIR);
@@ -914,6 +1399,21 @@ export class GameEngine {
 
   /** 放置方块 */
   private place(gx: number, gy: number, held: Slot, tileId: number): void {
+    // 木门特殊: 需 (x,y)与(x,y+1) 均 AIR 且 (x,y+2) 实心, 底格不夹实体
+    if (tileId === T.DOOR_C_T) {
+      if (gx < 1 || gx >= this.world.w - 1 || gy < 1 || gy >= this.world.h - 4) return;
+      if (this.world.get(gx, gy) !== T.AIR || this.world.get(gx, gy + 1) !== T.AIR) return;
+      if (!this.world.isSolid(gx, gy + 2)) return;
+      if (this.cellBlocked(gx, gy + 1)) return;
+      this.world.set(gx, gy, T.DOOR_C_T);
+      this.world.set(gx, gy + 1, T.DOOR_C_B);
+      this.consumeHeld(held);
+      this.placeCooldown = 10;
+      SFX.place();
+      burst(this.parts, gx * 16 + 8, gy * 16 + 16, '#8a6a42', 4, 1.2, 0.15);
+      this.uiDirty = true;
+      return;
+    }
     const shape = FURNITURE_SHAPE[tileId] ?? [[0, 0]];
     // 越界/占用检查
     for (const [dx, dy] of shape) {
@@ -934,9 +1434,10 @@ export class GameEngine {
       if (supported) break;
     }
     if (!supported) return;
-    // 实心方块不能与玩家/敌怪重叠
+    // 实心方块不能与玩家/敌怪/向导重叠
     if (TileDefs[tileId].solid) {
       const boxes: Body[] = [this.player, ...this.enemies];
+      if (this.guide) boxes.push(this.guide);
       for (const [dx, dy] of shape) {
         const x = gx + dx, y = gy + dy;
         for (const b of boxes) {
@@ -948,12 +1449,20 @@ export class GameEngine {
     for (const [dx, dy] of shape) {
       this.world.set(gx + dx, gy + dy, this.placeTileId(tileId, dx, dy));
     }
-    held.count--;
-    if (held.count <= 0) this.player.inv[this.player.hotbar] = null;
+    // 玩家放的宝箱 = 空箱
+    if (tileId === T.CHEST_TL) {
+      this.chestContents.set(this.world.idx(gx, gy), new Array(CHEST_SLOTS).fill(null));
+    }
+    this.consumeHeld(held);
     this.placeCooldown = 10;
     SFX.place();
     burst(this.parts, gx * 16 + 8, gy * 16 + 8, TileDefs[tileId].particleColor, 4, 1.2, 0.15);
     this.uiDirty = true;
+  }
+
+  private consumeHeld(held: Slot): void {
+    held.count--;
+    if (held.count <= 0) this.player.inv[this.player.hotbar] = null;
   }
 
   /** 多格家具的子格 ID */
@@ -964,13 +1473,363 @@ export class GameEngine {
       if (dy === 0) return dx === 0 ? T.FURNACE_TL : T.FURNACE_TR;
       return dx === 0 ? T.FURNACE_BL : T.FURNACE_BR;
     }
+    if (main === T.CHEST_TL) {
+      if (dy === 0) return dx === 0 ? T.CHEST_TL : T.CHEST_TR;
+      return dx === 0 ? T.CHEST_BL : T.CHEST_BR;
+    }
+    if (main === T.TABLE_L) return dx === 0 ? T.TABLE_L : T.TABLE_R;
+    if (main === T.DOOR_C_T) return dy === 0 ? T.DOOR_C_T : T.DOOR_C_B;
     return main;
   }
 
+  // ==================== 右键交互(门 > 宝箱 > 向导 > 使用物品) ====================
+  private interactRight(): void {
+    if (this.screen !== 'playing' || this.paused || this.player.dead) return;
+    const p = this.player;
+    const mw = this.getMouseWorld();
+    const gx = clamp(Math.floor(mw.x / 16), 0, this.world.w - 1);
+    const gy = clamp(Math.floor(mw.y / 16), 0, this.world.h - 1);
+    const id = this.world.get(gx, gy);
+    const pcx = p.x, pcy = p.y - p.h / 2;
+    const inReach = Math.hypot((gx * 16 + 8) - pcx, (gy * 16 + 8) - pcy) <= REACH;
+
+    // 1) 门
+    if (id >= T.DOOR_C_T && id <= T.DOOR_O_B) {
+      if (inReach) this.tryToggleDoor(gx, gy);
+      return;
+    }
+    // 2) 宝箱
+    if (id >= T.CHEST_TL && id <= T.CHEST_BR) {
+      if (inReach) this.openChestAt(gx, gy);
+      return;
+    }
+    // 3) 向导(点击其附近 48px —— 半径收窄,避免站在向导身边时右键使用物品被频繁拦截)
+    if (this.guide) {
+      const g = this.guide;
+      if (Math.hypot(mw.x - g.x, mw.y - (g.y - g.h / 2)) < 48) {
+        this.talkGuide();
+        return;
+      }
+    }
+    // 4) 手持可使用物品(生命水晶/召唤物/橡子)
+    this.useItem();
+  }
+
+  /** 开关门: 主格=DOOR_*_T; 关门需目标格无实体 */
+  private tryToggleDoor(gx: number, gy: number): boolean {
+    let x = gx, y = gy;
+    const hit = this.world.get(x, y);
+    if (hit === T.DOOR_C_B || hit === T.DOOR_O_B) y -= 1; // 主格是上格
+    const t0 = this.world.get(x, y), t1 = this.world.get(x, y + 1);
+    if (t0 === T.DOOR_C_T && t1 === T.DOOR_C_B) {
+      // 关 → 开
+      this.world.set(x, y, T.DOOR_O_T);
+      this.world.set(x, y + 1, T.DOOR_O_B);
+      SFX.doorOpen();
+      return true;
+    }
+    if (t0 === T.DOOR_O_T && t1 === T.DOOR_O_B) {
+      // 开 → 关: 两格无实体才合法(防夹)
+      if (this.cellBlocked(x, y) || this.cellBlocked(x, y + 1)) {
+        this.msg('门被挡住了！', '#e07070');
+        return false;
+      }
+      this.world.set(x, y, T.DOOR_C_T);
+      this.world.set(x, y + 1, T.DOOR_C_B);
+      SFX.doorClose();
+      return true;
+    }
+    return false; // 半扇门/被破坏 → 拒绝
+  }
+
+  /** 格子(16x16)是否被玩家/敌怪/向导占据 */
+  private cellBlocked(x: number, y: number): boolean {
+    const bx = x * 16 + 8, top = y * 16 + 1, bot = (y + 1) * 16 - 1;
+    const boxes: Body[] = [this.player, ...this.enemies.filter((e) => !e.dead)];
+    if (this.guide) boxes.push(this.guide);
+    for (const b of boxes) {
+      if (Math.abs(b.x - bx) < 8 + b.w / 2 && b.y > top && b.y - b.h < bot) return true;
+    }
+    return false;
+  }
+
+  // ==================== 宝箱 ====================
+  /** 从任意宝箱格定位主格(TL) */
+  private chestMainCell(gx: number, gy: number): { x: number; y: number } | null {
+    const isChest = (x: number, y: number): boolean => {
+      const id = this.world.get(x, y);
+      return id >= T.CHEST_TL && id <= T.CHEST_BR;
+    };
+    if (!isChest(gx, gy)) return null;
+    while (isChest(gx - 1, gy)) gx--;
+    while (isChest(gx, gy - 1)) gy--;
+    return { x: gx, y: gy };
+  }
+
+  private openChestAt(gx: number, gy: number): void {
+    const m = this.chestMainCell(gx, gy);
+    if (!m) return;
+    const idx = this.world.idx(m.x, m.y);
+    if (this.chestOpen === idx) { this.closeChest(); return; } // 再右键 = 关闭
+    if (!this.chestContents.has(idx)) {
+      this.chestContents.set(idx, new Array(CHEST_SLOTS).fill(null));
+    }
+    this.chestOpen = idx;
+    SFX.chestOpen();
+    this.uiDirty = true;
+  }
+
+  closeChest(): void {
+    if (this.chestOpen === null) return;
+    this.chestOpen = null;
+    this.returnCursorToInv();
+    this.uiDirty = true;
+  }
+
+  /** 每帧检查: 玩家离宝箱太远自动关闭 */
+  private checkChestDistance(): void {
+    if (this.chestOpen === null) return;
+    const w = this.world;
+    const x = this.chestOpen % w.w, y = (this.chestOpen / w.w) | 0;
+    const cx = x * 16 + 16, cy = y * 16 + 16;
+    const p = this.player;
+    if (Math.hypot(cx - p.x, cy - (p.y - p.h / 2)) > REACH) this.closeChest();
+  }
+
+  /** 挖掉/炸掉宝箱: 撒出全部内容并删除登记 */
+  private spillChestAt(gx: number, gy: number): void {
+    const m = this.chestMainCell(gx, gy);
+    if (!m) return;
+    const idx = this.world.idx(m.x, m.y);
+    const slots = this.chestContents.get(idx);
+    if (slots) {
+      for (const s of slots) {
+        if (s) this.drops.push(mkDrop(s.id, s.count, m.x * 16 + 16 + (Math.random() - 0.5) * 20, m.y * 16 + 14 + (Math.random() - 0.5) * 12));
+      }
+      this.chestContents.delete(idx);
+    }
+    if (this.chestOpen === idx) this.closeChest();
+  }
+
+  // ==================== 向导 ====================
+  private talkGuide(): void {
+    const g = this.guide;
+    if (!g) return;
+    g.talkT = 180;
+    SFX.guideTalk();
+    let line = this.guideLine;
+    if (GUIDE_LINES.length > 1) {
+      while (line === this.guideLine) line = GUIDE_LINES[(Math.random() * GUIDE_LINES.length) | 0];
+    }
+    this.guideLine = line;
+    this.guideLineUntil = this.frame + 180;
+  }
+
+  // ==================== 右键使用类物品 ====================
+  private useItem(): void {
+    const held = this.player.inv[this.player.hotbar];
+    if (!held) return;
+    if (held.id === IT.LIFE_CRYSTAL) this.useLifeCrystal(held);
+    else if (held.id === IT.EYE_SUMMON) this.useEyeSummon(held);
+    else if (held.id === IT.ACORN) this.useAcorn(held);
+  }
+
+  private useLifeCrystal(held: Slot): void {
+    const p = this.player;
+    if (p.maxHp >= HP_CAP) {
+      this.msg(`生命上限已达 ${HP_CAP}！`, '#e0c060');
+      return;
+    }
+    p.maxHp = Math.min(HP_CAP, p.maxHp + 20);
+    p.hp = Math.min(p.maxHp, p.hp + 20);
+    SFX.crystal();
+    this.msg(`生命上限提升至 ${p.maxHp}！`, '#f090b0');
+    this.consumeHeld(held);
+    this.uiDirty = true;
+  }
+
+  private useEyeSummon(held: Slot): void {
+    const p = this.player;
+    if (!this.isNight()) {
+      this.msg('它只在黑夜回应……', '#9a8ab8');
+      return;
+    }
+    if (this.boss && !this.boss.dead) {
+      this.msg('克苏鲁之眼已经在这里了！', '#e07070');
+      return;
+    }
+    const e = spawnEnemy('eoc', p.x - p.dir * 260, p.y - 240);
+    this.enemies.push(e);
+    this.boss = e;
+    this.bossPhaseWas = 0;
+    this.bossHitTally = 0;
+    SFX.bossRoar();
+    this.shake = 6;
+    this.msg('克苏鲁之眼苏醒了！！', '#e07070');
+    this.consumeHeld(held);
+    this.uiDirty = true;
+  }
+
+  private useAcorn(held: Slot): void {
+    const p = this.player;
+    const mw = this.getMouseWorld();
+    const aim = this.smart ? this.smartPlace : { gx: Math.floor(mw.x / 16), gy: Math.floor(mw.y / 16) };
+    if (!aim) return;
+    const gx = clamp(aim.gx, 0, this.world.w - 1), gy = clamp(aim.gy, 0, this.world.h - 1);
+    if (Math.hypot((gx * 16 + 8) - p.x, (gy * 16 + 8) - (p.y - p.h / 2)) > REACH) return;
+    if (this.world.get(gx, gy) !== T.AIR) return;
+    const below = this.world.get(gx, gy + 1);
+    if (below !== T.GRASS && below !== T.JUNGLE_GRASS && below !== T.CORRUPT_GRASS && below !== T.SNOW) return;
+    this.world.set(gx, gy, T.SAPLING);
+    this.saplings.push({ x: gx, y: gy, t: 0, due: SAPLING_MIN + Math.random() * SAPLING_RND });
+    SFX.plant();
+    burst(this.parts, gx * 16 + 8, gy * 16 + 8, '#6cc25a', 5, 1.2, 0.1);
+    this.consumeHeld(held);
+    this.uiDirty = true;
+  }
+
+  // ==================== 智能光标 ====================
+  /** 从玩家中心朝鼠标方向 ray-march(步长 8px, 上限 REACH): 命中实心/可挖格 = 挖掘目标; 命中前最后一个 AIR = 放置目标 */
+  private computeSmart(): void {
+    const p = this.player;
+    const ox = p.x, oy = p.y - p.h / 2;
+    const mw = this.getMouseWorld();
+    const dx = mw.x - ox, dy = mw.y - oy;
+    const d = Math.hypot(dx, dy);
+    this.smartTarget = null;
+    this.smartPlace = null;
+    if (d < 1) return;
+    const ux = dx / d, uy = dy / d;
+    let lastAir: { gx: number; gy: number } | null = null;
+    for (let t = 0; t <= REACH; t += 8) {
+      const px = ox + ux * t, py = oy + uy * t;
+      const gx = Math.floor(px / 16), gy = Math.floor(py / 16);
+      if (gx < 0 || gy < 0 || gx >= this.world.w || gy >= this.world.h) break;
+      const id = this.world.get(gx, gy);
+      if (id === T.AIR) { lastAir = { gx, gy }; continue; }
+      const td = TileDefs[id];
+      if (td.solid || (td.hardness > 0 && id !== T.WATER && id !== T.LAVA)) {
+        this.smartTarget = { gx, gy };
+        this.smartPlace = lastAir;
+        return;
+      }
+      // 液体/装饰 → 穿过(不作为放置候选)
+    }
+    this.smartPlace = lastAir;
+  }
+
+  // ==================== 投射物 ====================
+  private tickProjs(): void {
+    for (let i = this.projs.length - 1; i >= 0; i--) {
+      const pr = this.projs[i];
+      const res = updateProj(this.world, pr);
+      if (res === 'gone') { this.projs.splice(i, 1); continue; }
+      if (res === 'explode') {
+        const { x, y } = pr;
+        this.projs.splice(i, 1);
+        this.explode(x, y);
+        continue;
+      }
+      // 飞行中的箭: 命中敌怪(含 Boss)
+      if (pr.kind === 'arrow' && !pr.stuck) {
+        for (const e of this.enemies) {
+          if (e.dead) continue;
+          const cy = e.y - e.h / 2;
+          if (Math.abs(pr.x - e.x) < e.w / 2 + 3 && Math.abs(pr.y - cy) < e.h / 2 + 3) {
+            this.hitEnemy(e, ItemDefs[IT.BOW].dmg ?? 9, pr.vx >= 0 ? 1 : -1, 'arrow');
+            this.projs.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  /** 爆炸: 半径 3.5 格破坏(hardness∈[0,600)) + 实体伤害 + 震动/粒子/音效 */
+  private explode(x: number, y: number): void {
+    const w = this.world;
+    const cx = x / 16, cy = y / 16;
+    const gx0 = Math.max(1, Math.floor(cx) - 4), gx1 = Math.min(w.w - 2, Math.floor(cx) + 4);
+    const gy0 = Math.max(1, Math.floor(cy) - 4), gy1 = Math.min(w.h - 3, Math.floor(cy) + 4);
+    const broken: { x: number; y: number; color: string }[] = [];
+    for (let gy = gy0; gy <= gy1; gy++) {
+      for (let gx = gx0; gx <= gx1; gx++) {
+        const d = Math.hypot(gx + 0.5 - cx, gy + 0.5 - cy);
+        if (d > 3.5) continue;
+        const id = w.get(gx, gy);
+        if (id === T.AIR) continue;
+        const td = TileDefs[id];
+        if (td.hardness < 0 || td.hardness >= 600) continue; // 岩浆/祭坛/狱岩不动
+        if (td.furnitureGroup === 'chest') {
+          this.spillChestAt(gx, gy);
+          const cells = w.clearFurniture(gx, gy);
+          for (const c of cells) this.mineDamage.delete(w.idx(c.x, c.y));
+          if (Math.random() < 0.6 && td.drop) this.drops.push(mkDrop(td.drop, 1, gx * 16 + 8, gy * 16 + 8));
+          continue;
+        }
+        if (id === T.TRUNK) {
+          const cells = w.fellTree(gx, gy);
+          let woods = 0;
+          for (const c of cells) { if (c.trunk) woods++; this.mineDamage.delete(w.idx(c.x, c.y)); }
+          for (let k = 0; k < woods; k++) {
+            if (Math.random() < 0.6) this.drops.push(mkDrop(IT.WOOD, 1, gx * 16 + 8 + (Math.random() - 0.5) * 20, gy * 16 + 4));
+          }
+          continue;
+        }
+        if (td.furnitureGroup) {
+          const cells = w.clearFurniture(gx, gy);
+          for (const c of cells) this.mineDamage.delete(w.idx(c.x, c.y));
+          if (Math.random() < 0.6 && td.drop) this.drops.push(mkDrop(td.drop, 1, gx * 16 + 8, gy * 16 + 8));
+          continue;
+        }
+        w.set(gx, gy, T.AIR);
+        this.mineDamage.delete(w.idx(gx, gy));
+        if (td.drop && Math.random() < 0.6) this.drops.push(mkDrop(td.drop, 1, gx * 16 + 8, gy * 16 + 8));
+        broken.push({ x: gx, y: gy, color: td.particleColor });
+      }
+    }
+    for (let i = 0; i < broken.length && i < 14; i++) {
+      burst(this.parts, broken[i].x * 16 + 8, broken[i].y * 16 + 8, broken[i].color, 2, 2, 0.2);
+    }
+    // 敌怪伤害(80px 内 60*(1-d/90), 含防御减伤)
+    for (const e of this.enemies) {
+      if (e.dead) continue;
+      const d = Math.hypot(e.x - x, (e.y - e.h / 2) - y);
+      if (d > 80) continue;
+      const raw = BOMB_DMG * (1 - d / 90);
+      const dmg = Math.max(1, Math.round(raw - (ENEMY_DEFS[e.kind].def ?? 0)));
+      e.hp -= dmg;
+      e.flash = 8;
+      e.hpShow = 160;
+      e.vx += (e.x >= x ? 1 : -1) * 4 * (1 - e.kb * 0.6);
+      e.vy = Math.min(e.vy, -3);
+      this.dmgs.push({
+        x: e.x + (Math.random() - 0.5) * 8, y: e.y - e.h - 6,
+        vy: -1.1, text: String(dmg), color: '#ffb060', life: 46, crit: false,
+      });
+      if (e.hp <= 0) this.killEnemy(e);
+    }
+    // 玩家自伤 ×0.5(走 hurtPlayer 无敌帧)
+    const p = this.player;
+    if (!p.dead) {
+      const d = Math.hypot(p.x - x, (p.y - p.h / 2) - y);
+      if (d <= 80) {
+        this.hurtPlayer(Math.max(1, Math.round(BOMB_DMG * (1 - d / 90) * 0.5)), p.x >= x ? 1 : -1, true);
+      }
+    }
+    this.shake = 8;
+    SFX.explosion();
+    burst(this.parts, x, y, '#ff9a3c', 20, 4.2, 0.06);   // 火橙
+    burst(this.parts, x, y, '#6a6a6a', 14, 2.4, -0.02);  // 烟灰
+    burst(this.parts, x, y, '#ffd75e', 8, 3, 0.1);
+  }
+
   // ==================== 敌怪 ====================
-  private hitEnemy(e: Enemy, dmg: number, dir: 1 | -1): void {
+  private hitEnemy(e: Enemy, dmg: number, dir: 1 | -1, sfx: 'melee' | 'arrow' = 'melee'): void {
+    const def = ENEMY_DEFS[e.kind];
     const crit = Math.random() < 0.1;
-    const final = Math.max(1, Math.round(dmg * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1)));
+    const raw = dmg * (0.85 + Math.random() * 0.3) * (crit ? 2 : 1);
+    const final = Math.max(1, Math.round(raw - (def.def ?? 0)));
     e.hp -= final;
     e.flash = 8;
     e.hpShow = 160;
@@ -980,7 +1839,14 @@ export class GameEngine {
       x: e.x + (Math.random() - 0.5) * 8, y: e.y - e.h - 6,
       vy: -1.1, text: String(final), color: crit ? '#ffd75e' : '#ffffff', life: 46, crit,
     });
-    SFX.enemyHit();
+    if (def.boss) {
+      this.bossHitTally++;
+      if (this.bossHitTally % 6 === 0) SFX.bossHit();
+    } else if (sfx === 'arrow') {
+      SFX.arrowHit();
+    } else {
+      SFX.enemyHit();
+    }
     if (e.hp <= 0) this.killEnemy(e);
   }
 
@@ -988,6 +1854,20 @@ export class GameEngine {
     e.dead = true;
     const def = ENEMY_DEFS[e.kind];
     burst(this.parts, e.x, e.y - e.h / 2, def.mapColor, 16, 3, 0.2);
+    if (def.boss) {
+      SFX.bossDie();
+      this.msg('你击败了克苏鲁之眼！', '#f7d060');
+      this.boss = null;
+      this.bossPhaseWas = 0;
+      this.bossHitTally = 0;
+      const ore = 18 + ((Math.random() * 13) | 0);   // 18-30 魔金
+      const lens = 3 + ((Math.random() * 3) | 0);    // 3-5 晶状体
+      this.drops.push(mkDrop(IT.DEMONITE_ORE, ore, e.x, e.y - 12));
+      this.drops.push(mkDrop(IT.LENS, lens, e.x, e.y - 12));
+      this.shake = 10;
+      this.uiDirty = true;
+      return;
+    }
     SFX.enemyDie();
     if (def.gelDrop) {
       const [a, b] = def.gelDrop;
@@ -997,8 +1877,8 @@ export class GameEngine {
     if (e.kind === 'zombie' && Math.random() < 0.35) {
       this.drops.push(mkDrop(Math.random() < 0.5 ? IT.TORCH : IT.STONE, 1 + (Math.random() * 2 | 0), e.x, e.y - 8));
     }
-    if (e.kind === 'eye' && Math.random() < 0.5) {
-      this.drops.push(mkDrop(IT.ORE_IRON, 1, e.x, e.y - 8));
+    if (def.lensDrop && Math.random() < def.lensDrop) {
+      this.drops.push(mkDrop(IT.LENS, 1, e.x, e.y - 8));
     }
   }
 
@@ -1007,12 +1887,38 @@ export class GameEngine {
     const night = this.isNight();
     for (const e of this.enemies) {
       updateEnemy(this.world, e, p.x, p.y, night, this.frame);
-      // 白天夜怪消散
-      if (!night && e.night && Math.random() < 0.012) {
+      const def = ENEMY_DEFS[e.kind];
+      // 白天夜怪消散(Boss 豁免 — 由 flee 机制处理)
+      if (!night && e.night && !def.boss && Math.random() < 0.012) {
         burst(this.parts, e.x, e.y - e.h / 2, '#6a6a8a', 8, 1.6, -0.02);
         e.dead = true;
         continue;
       }
+      // Boss 管理: 阶段跳变狂怒音效 / flee 出屏移除
+      if (def.boss && this.boss === e) {
+        const ph = e.phase ?? 0;
+        if (ph === 1 && this.bossPhaseWas === 0) SFX.bossRoar();
+        this.bossPhaseWas = ph;
+        if (e.mode === 'flee' && e.y < this.camY - 300) {
+          e.dead = true;
+          this.boss = null;
+          this.msg('克苏鲁之眼逃走了……', '#9a8ab8');
+          this.uiDirty = true;
+          continue;
+        }
+      }
+      // 岩浆伤害(lslime 免疫; 每 30 帧扣 30)
+      if (e.kind !== 'lslime' && this.frame % 30 === 0 && bodyInLava(this.world, e)) {
+        e.hp -= 30;
+        e.flash = 6;
+        e.hpShow = 160;
+        this.dmgs.push({
+          x: e.x, y: e.y - e.h - 6, vy: -1, text: '30', color: '#ff9040', life: 40, crit: false,
+        });
+        if (e.hp <= 0) { this.killEnemy(e); continue; }
+      }
+      // flee 状态不造成接触伤害
+      if (e.mode === 'flee') continue;
       // 碰撞玩家
       if (!p.dead && p.iframes <= 0 && p.spawnProt <= 0) {
         if (Math.abs(e.x - p.x) < e.w / 2 + p.w / 2
@@ -1022,12 +1928,16 @@ export class GameEngine {
         }
       }
     }
-    this.enemies = this.enemies.filter((e) => !e.dead && Math.hypot(e.x - p.x, e.y - p.y) < 70 * 16);
+    if (this.boss && (this.boss.dead || !this.enemies.includes(this.boss))) this.boss = null;
+    this.enemies = this.enemies.filter(
+      (e) => !e.dead && (ENEMY_DEFS[e.kind].boss || Math.hypot(e.x - p.x, e.y - p.y) < 70 * 16),
+    );
   }
 
-  private hurtPlayer(dmg: number, dir: number, noKb: boolean): void {
+  private hurtPlayer(raw: number, dir: number, noKb: boolean): void {
     const p = this.player;
     if (p.dead || p.iframes > 0) return;
+    const dmg = Math.max(1, Math.round(raw - this.defense() * 0.5)); // 盔甲减伤
     p.hp -= dmg;
     p.lastHurt = this.frame;
     p.iframes = noKb ? 20 : PLAYER_CONF.iframes;
@@ -1052,42 +1962,152 @@ export class GameEngine {
     p.dead = true;
     p.deadTimer = PLAYER_CONF.respawnTime * 60;
     p.cursorItem = null;
+    if (this.chestOpen !== null) this.closeChest();
+    this.mapOpen = false;
     burst(this.parts, p.x, p.y - p.h / 2, '#c03030', 26, 3.4, 0.22);
     burst(this.parts, p.x, p.y - p.h / 2, '#f0c8a0', 14, 2.6, 0.22);
     SFX.death();
     this.shake = 8; // 死亡更震撼
     this.screen = 'dead';
+    Music.setScene('title');
     this.uiDirty = true;
   }
 
+  /** 分层群系刷怪: 地表(昼夜+群系池) / 洞穴(bat+skel) / 地狱(lslime+bat) */
   private tickSpawn(): void {
     this.spawnTimer--;
     if (this.spawnTimer > 0) return;
     this.spawnTimer = 80 + Math.random() * 80;
-    const night = this.isNight();
-    const max = night ? MAX_ENEMIES_NIGHT : MAX_ENEMIES_DAY;
-    if (this.enemies.length >= max) return;
+    const w = this.world;
     const p = this.player;
+    // Boss 不占普通刷怪上限
+    let count = 0;
+    for (const e of this.enemies) if (!ENEMY_DEFS[e.kind].boss) count++;
+    const pgx = clamp(Math.floor(p.x / 16), 2, w.w - 3);
+    const pgy = clamp(Math.floor(p.y / 16), 2, w.h - 3);
+    const dl = w.dirtLine[pgx] ?? w.surface[pgx] + 15;
+    const hellY = w.hellY;
+    const night = this.isNight();
+    const biome = w.biomeAt(pgx);
+
+    let cap: number;
+    let pool: EnemyKind[];
+    let layer: 'surface' | 'cave' | 'hell';
+    if (pgy < dl + 10) {
+      layer = 'surface';
+      if (night) {
+        cap = MAX_ENEMIES_NIGHT;
+        pool = biome === BIOME.CORRUPTION ? ['zombie', 'eye', 'eos'] : ['zombie', 'eye'];
+      } else {
+        cap = MAX_ENEMIES_DAY;
+        pool = biome === BIOME.JUNGLE ? ['bslime', 'bslime', 'gslime']
+          : biome === BIOME.CORRUPTION ? ['eos']
+            : ['gslime', 'bslime'];
+      }
+    } else if (pgy < hellY) {
+      layer = 'cave';
+      cap = MAX_ENEMIES_CAVE;
+      pool = pgy > dl + 40 ? ['bat', 'skel'] : ['bat'];
+    } else {
+      layer = 'hell';
+      cap = MAX_ENEMIES_HELL;
+      pool = ['lslime', 'bat'];
+    }
+    if (count >= cap) return;
+    const kind = pool[(Math.random() * pool.length) | 0];
+    const def = ENEMY_DEFS[kind];
+
+    // 屏幕边缘列 + 不在视野内
     const side = Math.random() < 0.5 ? -1 : 1;
-    const gx = clamp(Math.floor(p.x / 16) + side * (26 + Math.floor(Math.random() * 14)), 2, this.world.w - 3);
-    // 不在视野内生成
+    const gx = clamp(pgx + side * (26 + Math.floor(Math.random() * 14)), 2, w.w - 3);
     const camL = this.camX / 16 - 2, camR = (this.camX + this.viewW()) / 16 + 2;
     if (gx > camL && gx < camR) return;
-    let kind: EnemyKind;
-    const r = Math.random();
-    if (night) kind = r < 0.5 ? 'zombie' : r < 0.75 ? 'eye' : 'bslime';
-    else kind = r < 0.8 ? 'gslime' : 'bslime';
-    const def = ENEMY_DEFS[kind];
-    let x = gx * 16 + 8, y: number;
-    if (def.fly) {
-      y = p.y - (12 + Math.random() * 10) * 16;
-      if (y < 32) return;
+    const x = gx * 16 + 8;
+    let y = 0;
+    if (layer === 'surface') {
+      if (def.fly) {
+        y = p.y - (12 + Math.random() * 10) * 16;
+        if (y < 32) return;
+      } else {
+        const sy = w.surface[gx];
+        y = (sy - 1) * 16;
+        if (w.get(gx, sy - 1) !== T.AIR || w.get(gx, sy - 2) !== T.AIR) return;
+      }
     } else {
-      const sy = this.world.surface[gx];
-      y = (sy - 1) * 16;
-      if (this.world.get(gx, sy - 1) !== T.AIR || this.world.get(gx, sy - 2) !== T.AIR) return;
+      // 洞穴/地狱: 在对应层内找合法空腔(地面敌怪需脚下实心; 避开岩浆正上方)
+      const y0 = layer === 'cave' ? dl + 10 : hellY;
+      const y1 = layer === 'cave' ? hellY - 1 : w.h - 3;
+      let found = -1;
+      for (let tries = 0; tries < 24; tries++) {
+        const yy = clamp(pgy + ((Math.random() * 29) | 0) - 14, y0, y1);
+        if (w.get(gx, yy) !== T.AIR) continue;
+        if (w.get(gx, yy - 1) === T.LAVA || w.get(gx, yy + 1) === T.LAVA) continue;
+        if (def.fly) { found = yy; break; }
+        if (w.isSolid(gx, yy + 1)) { found = yy; break; }
+      }
+      if (found < 0) return;
+      y = found * 16;
     }
     this.enemies.push(spawnEnemy(kind, x, y));
+  }
+
+  // ==================== dev 工具 ====================
+  /** dev G: 鼠标处随机刷一只普通敌怪 */
+  private devSpawn(): void {
+    const kinds: EnemyKind[] = ['gslime', 'bslime', 'zombie', 'eye', 'bat', 'skel', 'lslime', 'eos'];
+    const kind = kinds[(Math.random() * kinds.length) | 0];
+    const mw = this.getMouseWorld();
+    this.enemies.push(spawnEnemy(kind, mw.x, mw.y));
+    this.msg(`[dev] 生成 ${ENEMY_DEFS[kind].name}`, '#8ee8e8');
+  }
+
+  /** dev N: 昼夜取反跳转(白天正午 0.3 / 午夜 0.7) */
+  private devTime(): void {
+    const d = this.dayT();
+    const target = d < 0.5 ? 0.7 : 0.3;
+    this.timeSec = this.timeSec - (this.timeSec % CYCLE) + CYCLE * target;
+    this.msg(`[dev] 时间跳转至${target === 0.3 ? '正午' : '午夜'}`, '#8ee8e8');
+  }
+
+  // ==================== 树苗生长 ====================
+  private tickSaplings(): void {
+    for (let i = this.saplings.length - 1; i >= 0; i--) {
+      const s = this.saplings[i];
+      s.t++;
+      if (s.t >= s.due) {
+        if (this.growSapling(s.x, s.y)) this.saplings.splice(i, 1);
+        else { s.t = 0; s.due = SAPLING_MIN + Math.random() * SAPLING_RND; } // 被堵 → 稍后重试
+      }
+    }
+  }
+
+  /** 尝试长成树: 按下方草类型决定树冠; 上方 6-10 格须为空 */
+  private growSapling(x: number, y: number): boolean {
+    if (this.world.get(x, y) !== T.SAPLING) return true; // 已被破坏/移走
+    const below = this.world.get(x, y + 1);
+    let leaf: number = T.LEAF;
+    if (below === T.JUNGLE_GRASS) leaf = T.LEAF_JUNGLE;
+    else if (below === T.CORRUPT_GRASS) leaf = T.LEAF_CORRUPT;
+    else if (below === T.SNOW) leaf = T.LEAF_SNOW;
+    else if (below !== T.GRASS) return false; // 下方不再是草 → 不长
+    const h = 5 + ((Math.random() * 4) | 0); // 树干 5-8
+    // 需要上方 h+1 格空(树干 + 2 行树冠余量)
+    for (let k = 1; k <= h + 1; k++) {
+      if (this.world.get(x, y - k) !== T.AIR) return false;
+    }
+    const top = y - h + 1; // 树干顶格
+    for (let k = 0; k < h; k++) this.world.set(x, y - k, T.TRUNK);
+    // 树冠: top-2 行 3 宽, top-1 行 5 宽, top 行 5 宽(中间是树干)
+    for (let dy = -2; dy <= 0; dy++) {
+      const ty = top + dy;
+      const half = dy === -2 ? 1 : 2;
+      for (let dx = -half; dx <= half; dx++) {
+        if (dx === 0 && dy >= -1) continue; // 树干列
+        if (this.world.get(x + dx, ty) === T.AIR) this.world.set(x + dx, ty, leaf);
+      }
+    }
+    burst(this.parts, x * 16 + 8, top * 16, '#5cb85c', 10, 1.8, 0.1);
+    return true;
   }
 
   // ==================== 掉落物 ====================
@@ -1146,10 +2166,10 @@ export class GameEngine {
     ui.set({ messages: [...ms, { id: msgId, text: `拾取 ${def.name} ×${n}`, color: '#c8e8ff', born: now }].slice(-8) });
   }
 
-  // ==================== 小地图 ====================
-  private buildMinimapColors(): void {
+  // ==================== 小地图 + 全屏地图 ====================
+  private buildTileColors(): void {
     this.mmColors = [];
-    for (let i = 0; i < 32; i++) {
+    for (let i = 0; i < 64; i++) {
       const td = TileDefs[i];
       if (!td) { this.mmColors.push([0, 0, 0, 0]); continue; }
       const m = /^#([0-9a-f]{6})$/i.exec(td.mapColor);
@@ -1183,6 +2203,7 @@ export class GameEngine {
       const wall = this.world.walls[y * this.world.w + x];
       if (wall === 1) { data[p] = 52; data[p + 1] = 36; data[p + 2] = 24; data[p + 3] = 255; }
       else if (wall === 2) { data[p] = 34; data[p + 1] = 34; data[p + 2] = 42; data[p + 3] = 255; }
+      else if (wall > 0) { data[p] = 40; data[p + 1] = 38; data[p + 2] = 40; data[p + 3] = 255; }
       else { data[p] = 0; data[p + 1] = 0; data[p + 2] = 0; data[p + 3] = 0; }
     } else {
       const c = this.mmColors[id] ?? [128, 128, 128, 255];
@@ -1190,12 +2211,83 @@ export class GameEngine {
     }
   }
 
-  /** 瓦片变化时更新小地图(由 world.onTileChanged 调) */
+  /** 全屏地图离屏画布(1px=1格): AIR+无墙=深天蓝 / AIR+有墙=近黑 / 其他=mapColor */
+  buildMapCanvas(): void {
+    const c = this.mapCanvas ?? document.createElement('canvas');
+    c.width = this.world.w;
+    c.height = this.world.h;
+    const cx = c.getContext('2d')!;
+    const img = cx.createImageData(this.world.w, this.world.h);
+    for (let y = 0; y < this.world.h; y++) {
+      for (let x = 0; x < this.world.w; x++) {
+        this.paintMapCell(img.data, x, y);
+      }
+    }
+    cx.putImageData(img, 0, 0);
+    this.mapCanvas = c;
+    this.mapImg = img;
+    this.mapDirty.clear();
+  }
+
+  private paintMapCell(data: Uint8ClampedArray, x: number, y: number): void {
+    const i = y * this.world.w + x;
+    const id = this.world.tiles[i];
+    const p = i * 4;
+    let r = 0, g = 0, b = 0;
+    if (id === T.AIR) {
+      if (this.world.walls[i] > 0) { r = 16; g = 14; b = 18; }
+      else { r = 52; g = 84; b = 138; }
+    } else {
+      const c = this.mmColors[id];
+      if (c) { r = c[0]; g = c[1]; b = c[2]; }
+      else { r = 110; g = 110; b = 110; }
+    }
+    data[p] = r; data[p + 1] = g; data[p + 2] = b; data[p + 3] = 255;
+  }
+
+  /** 瓦片变化时更新小地图(立即) + 全屏地图(脏格, 每帧批量重画) */
   private onTileChanged = (x: number, y: number): void => {
-    if (!this.mmCanvas || !this.mmImg) return;
-    this.paintMMCell(this.mmImg.data, x, y);
-    this.mmCanvas.getContext('2d')!.putImageData(this.mmImg, 0, 0, x, y, 1, 1);
+    if (this.mmCanvas && this.mmImg) {
+      this.paintMMCell(this.mmImg.data, x, y);
+      this.mmCanvas.getContext('2d')!.putImageData(this.mmImg, 0, 0, x, y, 1, 1);
+    }
+    if (this.mapImg && x >= 0 && y >= 0 && x < this.world.w && y < this.world.h) {
+      this.mapDirty.add(y * this.world.w + x);
+    }
   };
+
+  /** 每帧 flush 全屏地图脏格(单次 putImageData) */
+  private flushMap(): void {
+    if (!this.mapCanvas || !this.mapImg || this.mapDirty.size === 0) return;
+    const w = this.world.w;
+    let minX = 1 << 30, minY = 1 << 30, maxX = -1, maxY = -1;
+    for (const idx of this.mapDirty) {
+      const x = idx % w, y = (idx / w) | 0;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      this.paintMapCell(this.mapImg.data, x, y);
+    }
+    this.mapDirty.clear();
+    this.mapCanvas.getContext('2d')!.putImageData(
+      this.mapImg, 0, 0, minX, minY, maxX - minX + 1, maxY - minY + 1,
+    );
+  }
+
+  /** 探索标记: 以 (cx,cy) 为圆心半径 42 格(局部圆, 每 60 帧一次) */
+  private markExplored(cx: number, cy: number): void {
+    if (!this.explored) return;
+    const w = this.world.w, h = this.world.h;
+    const r = MAP_EXPLORE_R, r2 = r * r;
+    for (let dy = -r; dy <= r; dy++) {
+      const y = cy + dy;
+      if (y < 0 || y >= h) continue;
+      const span = Math.floor(Math.sqrt(r2 - dy * dy));
+      const x0 = Math.max(0, cx - span), x1 = Math.min(w - 1, cx + span);
+      this.explored.fill(1, y * w + x0, y * w + x1 + 1);
+    }
+  }
 
   // ==================== UI 同步 ====================
   private syncUI(force: boolean): void {
@@ -1203,7 +2295,7 @@ export class GameEngine {
     const p = this.player;
     if (!p) return;
     const st = ui.getSnapshot();
-    const depth = Math.round((p.y / 16 - this.world.surface[clamp(Math.floor(p.x / 16), 0, this.world.w - 1)]) );
+    const depth = Math.round((p.y / 16 - this.world.surface[clamp(Math.floor(p.x / 16), 0, this.world.w - 1)]));
     const patch: Record<string, unknown> = {};
     const put = (k: string, v: unknown): void => {
       const sv = (st as unknown as Record<string, unknown>)[k];
@@ -1221,6 +2313,32 @@ export class GameEngine {
     put('stations', { ...this.stations() });
     put('depth', depth);
     put('isNight', this.isNight());
+    // ---- 9-e 新字段 ----
+    put('defense', this.defense());
+    const ar = p.armor ?? { head: null, body: null, legs: null };
+    if (st.armor.head !== ar.head || st.armor.body !== ar.body || st.armor.legs !== ar.legs) {
+      patch.armor = { head: ar.head, body: ar.body, legs: ar.legs };
+    }
+    put('chestOpen', this.chestOpen !== null);
+    if (this.uiDirty || force) {
+      put('chestSlots', this.chestOpen !== null
+        ? [...(this.chestContents.get(this.chestOpen) ?? new Array(CHEST_SLOTS).fill(null))]
+        : st.chestSlots);
+    }
+    const b = this.boss && !this.boss.dead
+      ? { name: ENEMY_DEFS[this.boss.kind].name, hp: Math.max(0, Math.round(this.boss.hp)), maxHp: this.boss.maxHp }
+      : null;
+    if ((st.boss?.name ?? null) !== (b?.name ?? null)
+      || (st.boss?.hp ?? -1) !== (b?.hp ?? -1)
+      || (st.boss?.maxHp ?? -1) !== (b?.maxHp ?? -1)) {
+      patch.boss = b;
+    }
+    put('mapOpen', this.mapOpen);
+    put('smart', this.smart);
+    put('devMode', this.devMode);
+    put('playerName', this.playerName);
+    put('seed', this.seedStr);
+    put('biomeName', BIOME_NAMES[this.world.biomeAt(clamp(Math.floor(p.x / 16), 0, this.world.w - 1))] ?? '森林');
     if (this.uiDirty || force) {
       const craftables = RECIPES.map((r, i) => ({
         index: i, out: r.out, count: r.count, can: this.canCraft(i),
@@ -1253,6 +2371,7 @@ export const engine: EngineAPI = {
   enterWorld: () => inst?.enterWorld(),
   continueGame: () => inst?.continueGame(),
   regenerate: () => inst?.regenerate(),
+  newWorld: (size, seedStr, playerName, dev) => inst?.newWorld(size, seedStr, playerName, dev),
   quitToTitle: () => inst?.quitToTitle(),
   saveGame: () => inst?.saveGame() ?? false,
   toggleInventory: () => inst?.toggleInventory(),
@@ -1262,4 +2381,9 @@ export const engine: EngineAPI = {
   toggleMute: () => inst?.toggleMute(),
   craft: (i) => inst?.craft(i),
   clickSlot: (i, r) => inst?.clickSlot(i, r),
+  clickChestSlot: (i, r) => inst?.clickChestSlot(i, r),
+  clickArmorSlot: (slot, r) => inst?.clickArmorSlot(slot, r),
+  toggleMap: () => inst?.toggleMap(),
+  toggleSmart: () => inst?.toggleSmart(),
+  closeChest: () => inst?.closeChest(),
 };

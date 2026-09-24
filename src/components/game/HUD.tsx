@@ -1,8 +1,10 @@
 'use client'
 
 /**
- * 游戏 HUD — 心形血条 / 呼吸气泡 / 快捷栏 / 背包 / 合成面板 / 消息 / 信息条 / 物品 tooltip / 键盘
+ * 游戏 HUD — 心形血条(两行/防御) / Boss 血条 / 呼吸气泡 / 快捷栏 / 背包+盔甲三槽+宝箱面板 / 合成面板 /
+ * 消息 / 信息条(群系/智能光标) / 物品 tooltip / 键盘
  * 仅在 screen === 'playing' 或 'dead' 时渲染;外层 pointer-events-none,可交互子元素 pointer-events-auto
+ * Tab(地图)/C(智能光标)/Esc 关地图与宝箱 由引擎 capture 阶段处理,此处不再绑定 Tab
  */
 
 import {
@@ -12,9 +14,9 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { HelpCircle, Moon, Sun, Volume2, VolumeX } from 'lucide-react'
+import { Crosshair, HelpCircle, Moon, Shield, Sun, Volume2, VolumeX } from 'lucide-react'
 import { ui, type Slot, type UIState } from '@/game/store'
-import { ItemDefs, RECIPES, type ItemKind, type StationKind } from '@/game/constants'
+import { ItemDefs, RECIPES, type ArmorSlot, type ItemKind, type StationKind } from '@/game/constants'
 import { getTextures, type GameTextures } from '@/game/textures'
 import { engine } from '@/game/engine'
 
@@ -24,6 +26,7 @@ const STATION_NAMES: Record<StationKind, string> = {
   workbench: '工作台',
   furnace: '熔炉',
   anvil: '铁砧',
+  altar: '恶魔祭坛',
 }
 
 const KIND_LABEL: Record<ItemKind, string> = {
@@ -32,6 +35,7 @@ const KIND_LABEL: Record<ItemKind, string> = {
   tool: '工具',
   weapon: '武器',
   station: '工作站',
+  armor: '盔甲',
 }
 
 /** 操作说明列表(Overlays 的标题屏帮助弹窗复用) */
@@ -41,11 +45,19 @@ export const GAME_CONTROLS: readonly (readonly [string, string])[] = [
   ['S', '下平台'],
   ['鼠标左键', '挖掘 / 放置 / 攻击'],
   ['滚轮 / 1~0', '切换物品'],
-  ['E / Tab', '打开背包'],
+  ['E', '打开背包'],
+  ['Tab', '全屏地图'],
+  ['C', '智能光标'],
   ['Esc', '暂停 / 关闭界面'],
   ['M', '静音'],
   ['H', '操作说明'],
 ]
+
+/** 开发者模式额外键位说明(devMode 时帮助弹窗追加一行) */
+export const GAME_DEV_CONTROLS_LINE = 'F 飞行 · G 刷怪 · N 昼夜切换'
+
+/** 盔甲三槽(头/身/腿)标签 */
+const ARMOR_SLOT_LABEL: Record<ArmorSlot, string> = { head: '头', body: '身', legs: '腿' }
 
 const HUD_CSS = `
 @keyframes hud-heart-pulse {
@@ -192,40 +204,48 @@ function CursorItemView({ item, tex }: { item: Slot; tex: GameTextures | null })
   )
 }
 
-/** 心形血条:每颗心 10 HP,半心用 50% 宽度裁剪 */
+/** 心形血条:每颗心 10 HP,半心用 50% 宽度裁剪;每行 10 颗,maxHp 200 时共两行 */
 function Hearts({ hp, maxHp, tex }: { hp: number; maxHp: number; tex: GameTextures | null }) {
   const n = Math.max(1, Math.ceil(maxHp / 10))
+  const rows: number[][] = []
+  for (let i = 0; i < n; i += 10) {
+    rows.push(Array.from({ length: Math.min(10, n - i) }, (_, j) => i + j))
+  }
   return (
-    // key 变化时整行重挂载 -> 血量变化重放轻微缩放动画
-    <div key={hp} className="hud-heart-pulse flex max-w-[248px] flex-wrap gap-0.5">
-      {Array.from({ length: n }, (_, i) => {
-        const v = hp - i * 10
-        const pct = v <= 0 ? 0 : v >= 10 ? 100 : v * 10
-        return (
-          <div key={i} className="relative h-[22px] w-[22px]">
-            {tex && (
-              <img
-                src={tex.heartEmptyURL}
-                alt=""
-                draggable={false}
-                aria-hidden
-                className="absolute inset-0 h-full w-full [image-rendering:pixelated]"
-              />
-            )}
-            {tex && pct > 0 && (
-              <div className="absolute inset-0 overflow-hidden" style={{ width: `${pct}%` }}>
-                <img
-                  src={tex.heartURL}
-                  alt=""
-                  draggable={false}
-                  aria-hidden
-                  className="h-[22px] w-[22px] [image-rendering:pixelated]"
-                />
+    // key 变化时整块重挂载 -> 血量变化重放轻微缩放动画
+    <div key={hp} className="hud-heart-pulse flex flex-col gap-0.5">
+      {rows.map((row, ri) => (
+        <div key={ri} className="flex gap-0.5">
+          {row.map((i) => {
+            const v = hp - i * 10
+            const pct = v <= 0 ? 0 : v >= 10 ? 100 : v * 10
+            return (
+              <div key={i} className="relative h-[22px] w-[22px]">
+                {tex && (
+                  <img
+                    src={tex.heartEmptyURL}
+                    alt=""
+                    draggable={false}
+                    aria-hidden
+                    className="absolute inset-0 h-full w-full [image-rendering:pixelated]"
+                  />
+                )}
+                {tex && pct > 0 && (
+                  <div className="absolute inset-0 overflow-hidden" style={{ width: `${pct}%` }}>
+                    <img
+                      src={tex.heartURL}
+                      alt=""
+                      draggable={false}
+                      aria-hidden
+                      className="h-[22px] w-[22px] [image-rendering:pixelated]"
+                    />
+                  </div>
+                )}
               </div>
-            )}
-          </div>
-        )
-      })}
+            )
+          })}
+        </div>
+      ))}
     </div>
   )
 }
@@ -262,24 +282,38 @@ interface SlotCellProps {
   tex: GameTextures | null
   selected?: boolean
   badge?: string
+  tone?: 'normal' | 'gold'   // gold = 宝箱格(边框偏金)
   className?: string
   onActivate: (right: boolean) => void
   onHover: (id: number | null) => void
 }
 
-/** 背包/快捷栏槽位:左键 onActivate(false),右键 onActivate(true) */
-function SlotCell({ slot, tex, selected = false, badge, className = '', onActivate, onHover }: SlotCellProps) {
+/** 背包/快捷栏/盔甲/宝箱槽位:左键 onActivate(false),右键 onActivate(true) */
+function SlotCell({
+  slot,
+  tex,
+  selected = false,
+  badge,
+  tone = 'normal',
+  className = '',
+  onActivate,
+  onHover,
+}: SlotCellProps) {
   const def = slot ? ItemDefs[slot.id] : undefined
   const url = slot ? tex?.iconURL[slot.id] : undefined
+  const toneCls =
+    tone === 'gold'
+      ? selected
+        ? 'hud-sel border-[#f7d060] bg-[rgba(60,48,16,0.88)]'
+        : 'border-[#c0a050] bg-[rgba(40,34,18,0.88)] hover:border-[#f7d060]'
+      : selected
+        ? 'hud-sel border-[#f7d060] bg-[rgba(38,34,20,0.88)]'
+        : 'border-[#6a76b8] bg-[rgba(28,34,66,0.85)] hover:border-[#8a96cc]'
   return (
     <button
       type="button"
       aria-label={def ? def.name : '空槽位'}
-      className={`relative flex items-center justify-center border-2 transition-colors focus-visible:outline-2 focus-visible:outline-[#f7d060] ${
-        selected
-          ? 'hud-sel border-[#f7d060] bg-[rgba(38,34,20,0.88)]'
-          : 'border-[#6a76b8] bg-[rgba(28,34,66,0.85)] hover:border-[#8a96cc]'
-      } ${className}`}
+      className={`relative flex items-center justify-center border-2 transition-colors focus-visible:outline-2 focus-visible:outline-[#f7d060] ${toneCls} ${className}`}
       onMouseDown={(e) => {
         if (e.button === 0 || e.button === 2) {
           e.preventDefault()
@@ -333,9 +367,21 @@ function ItemTooltipContent({ id }: { id: number }) {
         {KIND_LABEL[def.kind]}
         {def.kind === 'tool' && def.tool ? ` · ${def.tool === 'pick' ? '镐' : '斧'}` : ''}
       </span>
-      {(def.dmg !== undefined || def.power !== undefined || def.useTime !== undefined) && (
+      {(def.dmg !== undefined ||
+        def.power !== undefined ||
+        def.useTime !== undefined ||
+        def.defense !== undefined) && (
         <div className="flex flex-col gap-0.5 text-[11px] text-[#e8e4d8]">
-          {def.dmg !== undefined && <span>伤害 {def.dmg}</span>}
+          {def.ranged === 'arrow' && def.dmg !== undefined && (
+            <span className="text-[#a8d8a8]">远程 · 伤害 {def.dmg}</span>
+          )}
+          {def.ranged === 'bomb' && (
+            <span className="text-[#f0b090]">爆炸物{def.dmg !== undefined ? ` · 伤害 ${def.dmg}` : ''}</span>
+          )}
+          {!def.ranged && def.dmg !== undefined && <span>伤害 {def.dmg}</span>}
+          {def.kind === 'armor' && def.defense !== undefined && (
+            <span className="text-[#9ab8e0]">防御 +{def.defense}</span>
+          )}
           {def.power !== undefined && <span>挖掘力 {def.power}</span>}
           {def.useTime !== undefined && <span>使用间隔 {(def.useTime / 60).toFixed(2)} 秒</span>}
         </div>
@@ -376,8 +422,10 @@ export default function HUD() {
   const [hoverRecipe, setHoverRecipe] = useState<number | null>(null)
 
   const { screen, invOpen, paused } = st
+  /** 背包/宝箱任一打开时展示中下面板(打开宝箱时引擎不置 invOpen,由 UI 合并展示) */
+  const panelOpen = invOpen || st.chestOpen
 
-  /* ---- 键盘:UI 层按键(E/Tab/Esc/M/H/数字),移动等按键由引擎处理 ---- */
+  /* ---- 键盘:UI 层按键(E/Esc/M/H/数字);Tab 地图/C 智能光标/G/N dev/移动等按键由引擎处理 ---- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.repeat) return
@@ -387,8 +435,7 @@ export default function HUD() {
       }
       if (screen !== 'playing') return
       const k = e.key.toLowerCase()
-      if (k === 'e' || e.key === 'Tab') {
-        e.preventDefault()
+      if (k === 'e') {
         engine.toggleInventory()
       } else if (e.key === 'Escape') {
         if (helpOpen) setHelpOpen(false)
@@ -414,16 +461,23 @@ export default function HUD() {
     <div className="pointer-events-none absolute inset-0 select-none">
       <style>{HUD_CSS}</style>
 
-      {/* ---- 左上:心形血条 + 呼吸气泡(小屏时移到快捷栏下方,避免重叠) ---- */}
+      {/* ---- 左上:心形血条(两行) + 防御 + 呼吸气泡(小屏时移到快捷栏下方,避免重叠) ---- */}
       <div className="absolute left-2 top-[56px] flex flex-col lg:left-3 lg:top-2">
         <Hearts hp={st.hp} maxHp={st.maxHp} tex={tex} />
         {st.breath !== null && <BreathBar breath={st.breath} tex={tex} />}
+        <div
+          className="mt-1 flex items-center gap-1 text-[13px] font-bold leading-none text-[#9ab8e0] [text-shadow:1px_1px_0_#000]"
+          title={`防御 ${st.defense}`}
+        >
+          <Shield size={14} aria-hidden />
+          <span className="tabular-nums">{st.defense}</span>
+        </div>
       </div>
 
       {/* ---- 顶部中央:快捷栏 ---- */}
       <div
         className={`pointer-events-auto absolute left-1/2 flex -translate-x-1/2 gap-[2px] transition-all duration-200 min-[400px]:gap-1 ${
-          invOpen ? 'top-4 opacity-80' : 'top-2'
+          panelOpen ? 'top-4 opacity-80' : 'top-2'
         }`}
       >
         {st.slots.slice(0, 10).map((slot, i) => (
@@ -442,10 +496,44 @@ export default function HUD() {
         ))}
       </div>
 
-      {/* ---- 右上:信息条(位于引擎小地图 256x168 下方) ---- */}
-      <div className="absolute right-2 top-[176px] flex flex-col items-end">
+      {/* ---- 顶部中央(快捷栏下方):Boss 血条(名称金色描边 + 红条金边 + 每 10% 白色刻度) ---- */}
+      {st.boss && st.boss.maxHp > 0 && (
+        <div className="pointer-events-none absolute left-1/2 top-14 z-10 flex -translate-x-1/2 flex-col items-center gap-1 sm:top-[72px]">
+          <h2 className="text-lg font-black tracking-widest text-[#f7d060] [text-shadow:2px_2px_0_#000,-1px_-1px_0_#000,0_0_14px_rgba(247,208,96,0.5)] sm:text-2xl">
+            {st.boss.name}
+          </h2>
+          <div
+            className="relative h-[14px] w-[min(80vw,560px)] border-2 border-[#f7d060] bg-[#2a0a0a] shadow-[0_0_0_1px_#000,0_2px_8px_rgba(0,0,0,0.7)]"
+            role="progressbar"
+            aria-label={`${st.boss.name} 生命值`}
+            aria-valuemin={0}
+            aria-valuemax={st.boss.maxHp}
+            aria-valuenow={st.boss.hp}
+          >
+            <div
+              className="absolute bottom-[2px] left-[2px] top-[2px] bg-gradient-to-b from-[#ff6a5a] via-[#e03c3c] to-[#8a1616]"
+              style={{ width: `calc((100% - 4px) * ${Math.max(0, Math.min(1, st.boss.hp / st.boss.maxHp))})` }}
+            />
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((t) => (
+              <div
+                key={t}
+                aria-hidden
+                className="absolute inset-y-0 w-px bg-white/45"
+                style={{ left: `${t * 10}%` }}
+              />
+            ))}
+          </div>
+          <span className="text-[11px] font-bold tabular-nums text-[#e8e4d8] [text-shadow:1px_1px_0_#000]">
+            {st.boss.hp} / {st.boss.maxHp}
+          </span>
+        </div>
+      )}
+
+      {/* ---- 右上:信息条(群系/深度/昼夜,位于引擎小地图 256x168 下方)+ 智能光标切换 ---- */}
+      <div className="absolute right-2 top-[176px] flex flex-col items-end gap-1.5">
         <div className="rounded-sm bg-black/30 px-2 py-1 text-right text-[11px] leading-tight text-[#e8e4d8] [text-shadow:1px_1px_0_#000]">
-          <div className="tabular-nums">{st.depth >= 0 ? `${st.depth} 米` : '地表上'}</div>
+          <div className="text-[10px] text-[#9ab8e0]">{st.biomeName}</div>
+          <div className="mt-0.5 tabular-nums">{st.depth >= 0 ? `${st.depth} 米` : '地表上'}</div>
           <div className="mt-0.5 flex items-center justify-end gap-1">
             {st.isNight ? (
               <Moon size={14} className="text-slate-200" aria-hidden />
@@ -455,18 +543,88 @@ export default function HUD() {
             <span>{st.isNight ? '夜晚' : '白天'}</span>
           </div>
         </div>
+        <button
+          type="button"
+          aria-pressed={st.smart}
+          aria-label={st.smart ? '关闭智能光标' : '开启智能光标'}
+          title="智能光标 (C)"
+          className={`pointer-events-auto flex items-center gap-1 border-2 px-2 py-1 text-[11px] font-bold leading-none transition-colors focus-visible:outline-2 focus-visible:outline-[#f7d060] ${
+            st.smart
+              ? 'border-[#f7d060] bg-[rgba(60,48,16,0.9)] text-[#f7d060] [text-shadow:1px_1px_0_#000]'
+              : 'border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] hover:border-[#8a96cc]'
+          }`}
+          onClick={() => engine.toggleSmart()}
+        >
+          <Crosshair size={12} aria-hidden />
+          智能 {st.smart ? '开' : '关'}
+        </button>
       </div>
 
-      {/* ---- 中下方:背包 + 合成面板 ---- */}
-      {invOpen && (
+      {/* ---- 中下方:宝箱面板 + 背包 + 合成面板(背包或宝箱打开时) ---- */}
+      {panelOpen && (
         <div className="hud-fade-in hud-scroll pointer-events-auto absolute bottom-12 left-1/2 max-h-[calc(100vh-8rem)] w-max max-w-[calc(100vw-12px)] -translate-x-1/2 overflow-y-auto rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.92)] p-3 sm:p-4">
+          {/* 宝箱面板(20 格 5x4,边框偏金;Esc/E 由引擎关闭) */}
+          {st.chestOpen && (
+            <div className="mb-3 border-b-2 border-[#c0a050]/40 pb-3">
+              <div className="mb-2 flex items-center justify-between gap-6">
+                <h2 className="text-sm font-bold tracking-widest text-[#f7d060] [text-shadow:1px_1px_0_#000]">宝箱</h2>
+                <button
+                  type="button"
+                  aria-label="关闭宝箱"
+                  className="border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] px-2 py-0.5 text-xs text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
+                  onClick={() => engine.closeChest()}
+                >
+                  ✕
+                </button>
+              </div>
+              <div className="grid w-max grid-cols-5 gap-[2px] sm:gap-1">
+                {st.chestSlots.map((slot, i) => (
+                  <SlotCell
+                    key={i}
+                    slot={slot}
+                    tex={tex}
+                    tone="gold"
+                    onActivate={(right) => engine.clickChestSlot(i, right)}
+                    onHover={setHoverItemId}
+                    className="h-8 w-8 sm:h-11 sm:w-11"
+                  />
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-4">
             {/* 背包格 */}
             <div>
+              {/* 盔甲三槽(头/身/腿, 40px) + 防御合计 */}
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold tracking-widest text-[#f0e8c8]/80 [text-shadow:1px_1px_0_#000]">
+                    盔甲
+                  </span>
+                  {(['head', 'body', 'legs'] as ArmorSlot[]).map((s) => (
+                    <SlotCell
+                      key={s}
+                      slot={st.armor[s]}
+                      tex={tex}
+                      badge={ARMOR_SLOT_LABEL[s]}
+                      onActivate={(right) => engine.clickArmorSlot(s, right)}
+                      onHover={setHoverItemId}
+                      className="h-10 w-10"
+                    />
+                  ))}
+                </div>
+                <span
+                  className="flex items-center gap-1 text-[11px] font-bold leading-none text-[#9ab8e0] [text-shadow:1px_1px_0_#000]"
+                  title="护甲防御值"
+                >
+                  <Shield size={13} aria-hidden />
+                  防御 {st.defense}
+                </span>
+              </div>
               <div className="mb-2 flex items-center justify-between gap-6">
                 <h2 className="text-sm font-bold tracking-widest text-[#f0e8c8] [text-shadow:1px_1px_0_#000]">背包</h2>
                 <div className="flex items-center gap-2.5">
-                  {(['workbench', 'furnace', 'anvil'] as StationKind[]).map((s) => (
+                  {(['workbench', 'furnace', 'anvil', 'altar'] as StationKind[]).map((s) => (
                     <span key={s} className="flex items-center gap-1" title={STATION_NAMES[s]}>
                       <span
                         className={`h-2 w-2 rounded-full ${
@@ -583,7 +741,7 @@ export default function HUD() {
       {/* ---- 右下:静音 / 帮助按钮 + 提示文字 ---- */}
       <div className="absolute bottom-2 right-2 flex items-center gap-2">
         <span className="pointer-events-none text-[11px] text-[#e8e4d8]/60 [text-shadow:1px_1px_0_#000]">
-          M 静音 · H 帮助
+          C 智能 · M 静音 · H 帮助
         </span>
         <button
           type="button"
@@ -627,6 +785,14 @@ export default function HUD() {
               </li>
             ))}
           </ul>
+          {st.devMode && (
+            <div className="mt-2 flex items-center justify-between gap-3 border-2 border-[#f7d060]/50 bg-[rgba(60,48,16,0.45)] px-2 py-1.5">
+              <span className="text-[10px] font-bold tracking-wider text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+                开发者
+              </span>
+              <span className="text-right text-[11px] text-[#e8c878]">{GAME_DEV_CONTROLS_LINE}</span>
+            </div>
+          )}
           <p className="mt-3 border-t border-[#6a76b8]/40 pt-2 text-[10px] leading-relaxed text-[#8a8a9a]">
             键盘 + 鼠标游戏:先砍树取木材制作工作台,再挖矿造更好的工具。夜晚会有敌怪出没!
           </p>

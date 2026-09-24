@@ -113,6 +113,12 @@ export function bodyInWater(world: World, b: Body): boolean {
     || tileAt(world, b.x, b.y - 2) === T.WATER;
 }
 
+/** 身体是否泡在岩浆里(脚底格或身体中心格) */
+export function bodyInLava(world: World, b: Body): boolean {
+  return tileAt(world, b.x, b.y) === T.LAVA
+    || tileAt(world, b.x, b.y - b.h * 0.5) === T.LAVA;
+}
+
 // ==================== 玩家 ====================
 export interface SwingState {
   itemId: number;
@@ -168,10 +174,15 @@ export function updatePlayer(world: World, p: Player, input: InputState, frame: 
   p.headWater = tileAt(world, p.x, p.y - p.h + 6) === T.WATER;
   if (p.inWater && !p.wasInWater && p.vy > 3) ev.splash = true;
 
+  // 冰面检测: 脚下 1-2px 处的方块是冰且在地面 → 摩擦/加速乘冰面系数(很滑)
+  const onIce = p.onGround && (
+    tileAt(world, p.x, p.y + 1) === T.ICE || tileAt(world, p.x, p.y + 2) === T.ICE
+  );
+
   // 水平移动
   const inWaterSlow = p.inWater ? 0.62 : 1;
   const maxV = c.runSpeed * inWaterSlow;
-  const acc = (p.onGround ? c.accel : c.airAccel) * (p.inWater ? 0.7 : 1);
+  const acc = (p.onGround ? c.accel : c.airAccel) * (p.inWater ? 0.7 : 1) * (onIce ? c.iceAccelMul : 1);
   if (input.left && !input.right) {
     p.vx = Math.max(-maxV, p.vx - acc);
     p.dir = -1;
@@ -179,7 +190,7 @@ export function updatePlayer(world: World, p: Player, input: InputState, frame: 
     p.vx = Math.min(maxV, p.vx + acc);
     p.dir = 1;
   } else {
-    const f = p.onGround ? c.fric : c.airFric;
+    const f = p.onGround ? c.fric * (onIce ? c.iceFricMul : 1) : c.airFric;
     if (p.vx > 0) p.vx = Math.max(0, p.vx - f);
     else if (p.vx < 0) p.vx = Math.min(0, p.vx + f);
   }
@@ -229,7 +240,7 @@ export function updatePlayer(world: World, p: Player, input: InputState, frame: 
 }
 
 // ==================== 敌怪 ====================
-export type EnemyKind = 'gslime' | 'bslime' | 'zombie' | 'eye';
+export type EnemyKind = 'gslime' | 'bslime' | 'zombie' | 'eye' | 'bat' | 'skel' | 'lslime' | 'eos' | 'eoc';
 let enemySeq = 1;
 
 export interface Enemy extends Body {
@@ -244,11 +255,16 @@ export interface Enemy extends Body {
   fly: boolean;
   night: boolean;
   dead: boolean;
+  // ---- Boss / 蓄力状态字段(可选, 不影响旧敌怪) ----
+  mode?: 'hover' | 'telegraph' | 'dash' | 'spin' | 'flee'; // eoc 状态机(eos 只用 aiT)
+  aiT?: number;        // 状态计时(帧)
+  dashLeft?: number;   // 剩余冲刺次数(eoc)
+  phase?: 0 | 1;       // eoc 阶段(0=hover/3冲, 1=spin后4连冲)
 }
 
 export function spawnEnemy(kind: EnemyKind, x: number, y: number): Enemy {
   const c = ENEMY_DEFS[kind];
-  return {
+  const e: Enemy = {
     id: enemySeq++, kind,
     x, y: y - 1, vx: 0, vy: 0, w: c.w, h: c.h, onGround: false,
     hp: c.hp, maxHp: c.hp, dmg: c.dmg, kb: c.kb,
@@ -257,6 +273,16 @@ export function spawnEnemy(kind: EnemyKind, x: number, y: number): Enemy {
     hopTimer: 30 + Math.random() * 50, hpShow: 0,
     fly: c.fly, night: c.night, dead: false,
   };
+  if (kind === 'eoc') { e.mode = 'hover'; e.aiT = 0; e.dashLeft = 0; e.phase = 0; }
+  if (kind === 'eos') e.aiT = (Math.random() * 120) | 0; // 错开蓄力节奏
+  return e;
+}
+
+/** 飞行敌怪撞墙处理(eye 原有逻辑, bat/eos 复用) */
+function flyWallBounce(e: Enemy, r: MoveResult): void {
+  if (r.blockedX) e.vx = -e.vx * 0.6;
+  if (r.landed) e.vy = -Math.abs(e.vy) * 0.6 - 0.5;
+  if (r.headBump) e.vy = Math.abs(e.vy) * 0.6 + 0.5;
 }
 
 export function updateEnemy(world: World, e: Enemy, px: number, py: number, isNight: boolean, frame: number): void {
@@ -309,10 +335,143 @@ export function updateEnemy(world: World, e: Enemy, px: number, py: number, isNi
     }
     e.dir = dx > 0 ? 1 : -1;
     const r = moveBody(world, e, { platforms: false, dropThrough: false, stepUp: false });
-    if (r.blockedX) e.vx = -e.vx * 0.6;
-    if (r.landed) e.vy = -Math.abs(e.vy) * 0.6 - 0.5;
-    if (r.headBump) e.vy = Math.abs(e.vy) * 0.6 + 0.5;
+    flyWallBounce(e, r);
+  } else if (e.kind === 'bat') {
+    // 洞穴蝙蝠: 飞行追击 + 强不规则抖动(x/y 独立相位)
+    if (dist > 1) {
+      const nx = dx / dist, ny = dy / dist;
+      e.vx += nx * 0.09 + Math.sin(frame * 0.31 + e.id) * 0.14;
+      e.vy += ny * 0.09 + Math.sin(frame * 0.31 + e.id * 2.7 + 1.9) * 0.14;
+      const sp = Math.hypot(e.vx, e.vy);
+      const maxSp = 2.6;
+      if (sp > maxSp) { e.vx = e.vx / sp * maxSp; e.vy = e.vy / sp * maxSp; }
+    }
+    e.dir = dx > 0 ? 1 : -1;
+    const r = moveBody(world, e, { platforms: false, dropThrough: false, stepUp: false });
+    flyWallBounce(e, r);
+  } else if (e.kind === 'skel') {
+    // 骷髅: 同僵尸走地 AI, 速度略慢跳跃稍弱, 近距离加速逼近
+    if (dist < 700) {
+      e.dir = dx > 0 ? 1 : -1;
+      const spd = dist < 350 ? 1.2 : 0.9;
+      e.vx += (e.dir * spd - e.vx) * 0.07;
+    } else {
+      e.vx *= 0.9;
+    }
+    e.vy = Math.min(10, e.vy + (inWater ? 0.15 : 0.34));
+    const r = moveBody(world, e, { platforms: false, dropThrough: false, stepUp: true });
+    if (r.blockedX && e.onGround) e.vy = -6.1;
+    if (r.headBump) e.vy = 0.5;
+  } else if (e.kind === 'lslime') {
+    // 熔岩史莱姆: 跳得更高更快, 岩浆里不受伤(引擎处理)
+    if (e.onGround) {
+      e.vx *= 0.82;
+      e.hopTimer--;
+      if (e.hopTimer <= 0 && dist < 560) {
+        e.dir = dx > 0 ? 1 : -1;
+        e.vx = e.dir * 1.7;
+        e.vy = -(3.4 + Math.random() * 1.6); // -4.2 ± 0.8
+        e.hopTimer = 55 + Math.random() * 55;
+      } else if (e.hopTimer <= 0) {
+        e.hopTimer = 40 + Math.random() * 60;
+      }
+    }
+    e.vy = Math.min(9, e.vy + (inWater ? 0.14 : 0.3));
+    moveBody(world, e, { platforms: false, dropThrough: false, stepUp: false });
+  } else if (e.kind === 'eos') {
+    // 噬魂者: 飞行追击 + 蓄力扑咬(计 120 帧 → 冲刺 26 帧 → 循环)
+    e.aiT = (e.aiT ?? 0) + 1;
+    if (e.aiT <= 120) {
+      if (dist > 1) {
+        const nx = dx / dist, ny = dy / dist;
+        e.vx += nx * 0.045;
+        e.vy += ny * 0.045;
+        const sp = Math.hypot(e.vx, e.vy);
+        if (sp > 1.4) { e.vx = e.vx / sp * 1.4; e.vy = e.vy / sp * 1.4; }
+      }
+      if (e.aiT === 120 && dist > 1) {
+        // 蓄力完成 → 扑咬(朝玩家冲刺)
+        e.vx = (dx / dist) * 4.2;
+        e.vy = (dy / dist) * 4.2;
+      }
+    } else if (e.aiT >= 146) {
+      e.aiT = 0; // 扑咬结束, 回到缓慢逼近
+    }
+    e.dir = dx > 0 ? 1 : -1;
+    const r = moveBody(world, e, { platforms: false, dropThrough: false, stepUp: false });
+    flyWallBounce(e, r);
+  } else if (e.kind === 'eoc') {
+    updateEoc(world, e, px, py, isNight, dx);
   }
+}
+
+/** 克苏鲁之眼 Boss 状态机(挂在 updateEnemy 内, 不单独导出) */
+function updateEoc(world: World, e: Enemy, px: number, py: number, isNight: boolean, dx: number): void {
+  if (e.mode === undefined) { e.mode = 'hover'; e.aiT = 0; e.dashLeft = 0; e.phase = 0; }
+  e.aiT = (e.aiT ?? 0) + 1;
+  const ph = e.phase ?? 0;
+
+  // 阶段切换: hp ≤ 45% → 原地旋转蓄力(engine 可观察 phase 变化触发音效)
+  if (ph === 0 && e.hp <= e.maxHp * 0.45) {
+    e.phase = 1;
+    e.mode = 'spin';
+    e.aiT = 1;
+    e.dashLeft = 0;
+  }
+  // 天亮 → 逃走(不再造成伤害, 引擎负责出屏后移除)
+  if (!isNight) e.mode = 'flee';
+
+  // 朝玩家当前位置(身体中心)设冲刺速度
+  const aim = (speed: number) => {
+    const cy = e.y - e.h / 2;
+    const ddx = px - e.x, ddy = (py - 20) - cy;
+    const d = Math.hypot(ddx, ddy) || 1;
+    e.vx = (ddx / d) * speed;
+    e.vy = (ddy / d) * speed;
+  };
+
+  if (e.mode === 'flee') {
+    e.vy = -4;
+    e.vx *= 0.98;
+  } else if (e.mode === 'hover') {
+    // 悬停在玩家上方 130px, 转向加速 0.08 限速 2.3(速度平滑)
+    const cy = e.y - e.h / 2;
+    const tdx = px - e.x, tdy = (py - 130) - cy;
+    const d = Math.hypot(tdx, tdy) || 1;
+    e.vx += (tdx / d) * 0.08;
+    e.vy += (tdy / d) * 0.08;
+    const sp = Math.hypot(e.vx, e.vy);
+    if (sp > 2.3) { e.vx = e.vx / sp * 2.3; e.vy = e.vy / sp * 2.3; }
+    if ((e.aiT ?? 0) >= (ph === 0 ? 150 : 70)) {
+      if (ph === 0) { e.mode = 'telegraph'; e.aiT = 0; }
+      else { e.mode = 'dash'; e.dashLeft = 4; e.aiT = 0; aim(8.0); }
+    }
+  } else if (e.mode === 'telegraph') {
+    // 原地震颤 30 帧
+    e.vx = e.vx * 0.8 + Math.sin(e.anim * 0.9) * 0.4;
+    e.vy = e.vy * 0.8 + Math.cos(e.anim * 1.13) * 0.35;
+    if ((e.aiT ?? 0) >= 30) { e.mode = 'dash'; e.dashLeft = 3; e.aiT = 0; aim(6.5); }
+  } else if (e.mode === 'dash') {
+    // 冲刺: 每次维持 dur 帧后重瞄下一次
+    if ((e.aiT ?? 0) >= (ph === 0 ? 42 : 36)) {
+      e.dashLeft = (e.dashLeft ?? 1) - 1;
+      if (e.dashLeft <= 0) { e.mode = 'hover'; e.aiT = 0; }
+      else { e.aiT = 0; aim(ph === 0 ? 6.5 : 8.0); }
+    }
+  } else if (e.mode === 'spin') {
+    // 原地旋转蓄力 60 帧, 位置缓停
+    e.vx = e.vx * 0.85 + Math.sin(e.anim * 0.55) * 0.25;
+    e.vy = e.vy * 0.85 + Math.cos(e.anim * 0.67) * 0.2;
+    if ((e.aiT ?? 0) >= 60) { e.mode = 'hover'; e.aiT = 0; }
+  }
+
+  e.dir = dx > 0 ? 1 : -1;
+  // 不受重力; 撞墙轻反弹(速度×-0.5, 用碰撞前速度)
+  const pvx = e.vx, pvy = e.vy;
+  const r = moveBody(world, e, { platforms: false, dropThrough: false, stepUp: false });
+  if (r.blockedX) e.vx = -pvx * 0.5;
+  if (r.landed) e.vy = -pvy * 0.5;
+  if (r.headBump) e.vy = -pvy * 0.5;
 }
 
 function isNightOnlyIssue(_e: Enemy): boolean { return false; }
@@ -370,6 +529,185 @@ export function burst(parts: Particle[], x: number, y: number, color: string, n:
       color, size: 2 + ((Math.random() * 2) | 0), grav,
     });
   }
+}
+
+// ==================== 向导 NPC ====================
+export interface Guide extends Body {
+  dir: 1 | -1;
+  walkT: number;        // 走路动画相位
+  anim: number;         // 通用动画计时
+  homeX: number;        // 徘徊中心(世界px)
+  decideT: number;      // 决策计时
+  moving: boolean;      // 当前决策是否在走
+  talkT: number;        // >0 = 正在说话(头顶气泡时长, 引擎/渲染用)
+}
+
+export function mkGuide(x: number, y: number): Guide {
+  return {
+    x, y, vx: 0, vy: 0, w: 12, h: 36, onGround: false,
+    dir: 1, walkT: 0, anim: 0,
+    homeX: x,
+    decideT: 60 + Math.random() * 120,
+    moving: false, talkT: 0,
+  };
+}
+
+export function updateGuide(world: World, g: Guide, px: number, frame: number): void {
+  g.anim++;
+  if (g.talkT > 0) g.talkT--;
+
+  // 决策: 每 90-240 帧(40% 停、60% 随机方向走; 离家太远必朝家走)
+  g.decideT--;
+  if (g.decideT <= 0) {
+    g.decideT = 90 + Math.random() * 150;
+    const off = g.x - g.homeX;
+    if (Math.abs(off) > 260) {
+      g.moving = true;
+      g.dir = off > 0 ? -1 : 1;
+    } else if (Math.random() < 0.4) {
+      g.moving = false;
+    } else {
+      g.moving = true;
+      g.dir = Math.random() < 0.5 ? 1 : -1;
+    }
+  }
+
+  // 玩家在 60px 内 → 停下面向玩家(玩家离开后恢复原决策)
+  let wantMove = g.moving;
+  if (Math.abs(px - g.x) < 60) {
+    wantMove = false;
+    g.dir = px > g.x ? 1 : -1;
+  }
+
+  // 徘徊硬边界: 走出 homeX ±260 且还在朝外走 → 掉头
+  const off = g.x - g.homeX;
+  if (g.moving && Math.abs(off) > 260 && Math.sign(g.vx !== 0 ? g.vx : g.dir) === Math.sign(off)) {
+    g.dir = off > 0 ? -1 : 1;
+  }
+
+  // 悬崖检测: 前方 2 格那一列、脚下 4 格均无实心 → 掉头
+  if (g.onGround && wantMove) {
+    const fx = Math.floor((g.x + g.dir * 32) / 16);
+    const fy = Math.floor((g.y + 1) / 16);
+    let ground = false;
+    for (let i = 0; i < 4; i++) {
+      if (world.isSolid(fx, fy + i)) { ground = true; break; }
+    }
+    if (!ground) g.dir = (g.dir * -1) as 1 | -1;
+  }
+
+  // 水平移动(速度 0.9)
+  if (wantMove) {
+    g.vx += (g.dir * 0.9 - g.vx) * 0.2;
+  } else {
+    g.vx *= g.onGround ? 0.7 : 0.96;
+    if (Math.abs(g.vx) < 0.04) g.vx = 0;
+  }
+
+  // 重力(水中减衰)
+  const inWater = bodyInWater(world, g);
+  g.vy = Math.min(10, g.vy + (inWater ? 0.15 : 0.34));
+
+  const r = moveBody(world, g, { platforms: false, dropThrough: false, stepUp: true });
+  if (r.blockedX && g.onGround) g.vy = -6.8; // 撞墙跳
+  if (r.headBump) g.vy = 0.5;
+
+  // 走路动画相位
+  if (g.onGround && Math.abs(g.vx) > 0.3) g.walkT += 0.16 + Math.abs(g.vx) * 0.06;
+  else if (g.onGround) g.walkT = 0;
+
+  void frame;
+}
+
+// ==================== 投射物 ====================
+export interface Proj {
+  kind: 'arrow' | 'bomb';
+  x: number; y: number;    // 中心
+  vx: number; vy: number;
+  t: number;               // 已存活帧(arrow 插墙时重置计 60 帧消失)
+  rot: number;             // arrow 朝向角
+  stuck: boolean;          // arrow 插墙
+}
+
+/** 箭: 初速 11 朝目标方向 */
+export function mkArrow(x: number, y: number, tx: number, ty: number): Proj {
+  const dx = tx - x, dy = ty - y;
+  const d = Math.hypot(dx, dy) || 1;
+  const vx = (dx / d) * 11, vy = (dy / d) * 11;
+  return { kind: 'arrow', x, y, vx, vy, t: 0, rot: Math.atan2(vy, vx), stuck: false };
+}
+
+/** 炸弹: 抛物线初速, vx=clamp(dx/28,±4.5), vy=-(3.2+dist/55) 下限 -7 */
+export function mkBomb(x: number, y: number, tx: number, ty: number): Proj {
+  const dx = tx - x, dy = ty - y;
+  const dist = Math.hypot(dx, dy);
+  return {
+    kind: 'bomb', x, y,
+    vx: Math.max(-4.5, Math.min(4.5, dx / 28)),
+    vy: Math.max(-7, -(3.2 + dist / 55)),
+    t: 0, rot: 0, stuck: false,
+  };
+}
+
+/** 像素坐标处是否实心 */
+function solidPx(world: World, px: number, py: number): boolean {
+  return world.isSolid(Math.floor(px / 16), Math.floor(py / 16));
+}
+
+/**
+ * 每帧推进投射物。
+ * 返回: 'fly' 继续 | 'stuck' 箭插着等消失 | 'explode' 引擎执行爆炸 | 'gone' 移除
+ */
+export function updateProj(world: World, p: Proj): 'fly' | 'stuck' | 'explode' | 'gone' {
+  p.t++;
+
+  if (p.kind === 'arrow') {
+    if (p.stuck) {
+      return p.t > 60 ? 'gone' : 'stuck';
+    }
+    if (p.t > 300) return 'gone';
+
+    const inWater = tileAt(world, p.x, p.y) === T.WATER;
+    if (inWater) {
+      // 水中减速下沉
+      p.vx *= 0.96;
+      p.vy = Math.min(p.vy + 0.06, 0.8);
+    } else {
+      p.vy += 0.16;
+    }
+    p.rot = Math.atan2(p.vy, p.vx);
+
+    // 下一位置(半步+整步)所在格 solid → 插墙
+    const nx = p.x + p.vx, ny = p.y + p.vy;
+    if (solidPx(world, nx, ny) || solidPx(world, (p.x + nx) / 2, (p.y + ny) / 2)) {
+      p.stuck = true;
+      p.vx = 0; p.vy = 0;
+      p.t = 0; // 插墙后另计 60 帧消失
+      return 'stuck';
+    }
+    p.x = nx; p.y = ny;
+    return 'fly';
+  }
+
+  // ---- 炸弹 ----
+  if (p.t >= 150) return 'explode';
+  const here = tileAt(world, p.x, p.y);
+  if (here === T.LAVA) return 'explode';  // 岩浆里立即爆炸
+  if (here === T.WATER) return 'gone';    // 入水熄灭
+
+  const b: Body = { x: p.x, y: p.y, vx: p.vx, vy: p.vy, w: 6, h: 6, onGround: false };
+  b.vy = Math.min(9, b.vy + 0.22); // 重力
+  const pvx = b.vx, pvy = b.vy;    // 碰撞前速度(反弹用)
+  const r = moveBody(world, b, { platforms: false, dropThrough: false, stepUp: false });
+  if (r.landed) { b.vy = -pvy * 0.42; b.vx = pvx * 0.72; }  // 落地反弹
+  if (r.blockedX) b.vx = -pvx * 0.6;                        // 水平撞墙
+  if (r.headBump) b.vy = -pvy * 0.42;
+  p.x = b.x; p.y = b.y; p.vx = b.vx; p.vy = b.vy;
+
+  const now = tileAt(world, p.x, p.y);
+  if (now === T.LAVA) return 'explode';
+  if (now === T.WATER) return 'gone';
+  return 'fly';
 }
 
 export { IT };

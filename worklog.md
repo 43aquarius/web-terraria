@@ -211,3 +211,232 @@ Stage Summary:
 - 产出: standalone/main.ts + standalone/build.ts + public/terraria.html(168KB)
 - 单文件版与 Next.js 版共享同一套引擎代码和同一 localStorage 存档键(tw-save-v1), 存档互通
 - 重建命令: bun standalone/build.ts
+
+---
+Task ID: 9-0 + 9-1
+Agent: main
+Task: 调研参考站 terraria.space-z.ai + 大版本内容升级的地基 (constants.ts / store.ts)
+
+Work Log:
+- 完整体验参考站: 标题屏→创建角色(输入名)→世界列表→创建世界(尺寸 S/M/L + 种子 + DevMode)→进入游戏; 提取其 JS chunk 分析内容清单
+- 参考站内容盘点: 铜铁银金→魔金→狱岩全工具线+盔甲套装(头/身/腿)、弓+箭、炸弹、晶状体、生命水晶、Boss(克苏鲁之眼/世界吞噬者/骷髅王)、NPC(向导/树妖)、群系(森林/腐化/丛林/沙漠/地狱/蘑菇)、门/桌/椅/宝箱/祭坛/平台、智能光标、全屏地图(Tab)、住房检查、通知(F8)、存/读档; 音乐直接用了原版泰拉瑞亚 OST(版权风险, 我们继续程序化)
+- 我们现有内容盘点(见 worklog 早期条目): 森林单群系 + 铜铁银金工具 + 4种敌怪 + 工作台/熔炉/铁砧/平台/火把 + 水 + 小地图 + 存档; 核心差距=内容量与系统广度
+- 重写 src/game/constants.ts (~600行): 62种方块(新: 沙/雪/冰/泥/丛林草/黑檀石/腐化草/灰烬/狱岩/岩浆/黑曜石/蘑菇柄/蘑菇盖/仙人掌/门×4/宝箱×4/祭坛×4/桌子×2/椅子/生命水晶/树苗/藤蔓/三种群系树冠), 70种物品(新: 群系方块/弓/箭/炸弹/晶状体/生命水晶/可疑眼球/魔金系列/狱岩系列/铜锭/15件盔甲/橡子/门/宝箱/桌/椅), 45条配方, 盔甲ARMOR_COLORS, CHEST_LOOT五档战利品表, WORLD_SIZES三档, BIOME六群系, ENEMY_DEFS新增蝙蝠/骷髅/熔岩史莱姆/噬魂者/克苏鲁之眼(boss), GUIDE_LINES向导台词, PLAYER_CONF新增冰面摩擦/岩浆伤害参数, SAVE_KEY升级tw-save-v2(保留v1键名兼容读取)
+- 重写 src/game/store.ts: UIState新增 defense/armor三槽/stations.altar/chestOpen+chestSlots/boss/mapOpen/smart/devMode/playerName/biomeName
+- 修 HUD.tsx 两处类型映射(altar/armor label); tsc 0错误
+- 注意: 旧引擎尚未使用新常量, 后续任务 9-a/9-b/9-c/9-d/9-e/9-f/9-g 将分别落地
+
+Stage Summary:
+- 地基契约已定: constants.ts 是所有后续任务的唯一 ID/数值来源, 旧 ID 完全兼容
+- 分派计划: 9-a world.ts群系生成 / 9-b textures+sprites / 9-c entities敌怪Boss NPC投射物 / 9-d sound音效BGM 并行 → 9-e engine集成 → 9-f render + 9-g HUD 并行 → 9-int 集成验证 → 9-h 单文件版 → 9-i 推送GitHub
+- 引擎新 API 契约(9-e实现, 9-g消费): newWorld(size,seedStr,name,dev) / toggleMap() / toggleSmart() / closeChest() / clickChestSlot(i,right) / clickArmorSlot(slot,right); 键位: M地图 C智能光标 F飞行(dev) G刷怪(dev)
+
+---
+Task ID: 9-d
+Agent: sub (general-purpose)
+Task: sound.ts 扩展 — 14 个新 SFX + 程序化 BGM（title/day/night 三场景芯片音乐）
+
+Work Log:
+- 仅改 src/game/sound.ts（571→1311 行）；现有 13 个音效与 API 原样保留。新音效全部复用既有 playNoise/playTone/envGain/ready/allow(30ms 节流) 路径，峰值音量与现有水平一致（0.05~0.24）
+- 基础设施小扩展: AudioCore 增加 music(GainNode, 初始 0) 与 brown(懒创建缓冲); playNoise 加 brown?: boolean 选 brown noise（Paul Kellet 积分式，低频轰鸣质感）
+- 新 SFX×14: bowShoot(带通 600→2400 上扫+三角弦振700→380) / arrowHit(方波190+噪声click 各~30ms) / bombThrow(低通 0.15s) / explosion(brown 0.5s+正弦110→38+6ms 弱回响, 峰值 0.42≈1.5倍仍不削波) / doorOpen(失谐双锯齿180/189→260/272 拍频出吱呀颤抖) / doorClose(120Hz 方波+thud) / chestOpen(三角 620/880 错开 60ms+3400Hz 长尾混响感) / crystal(正弦 880/1175/1568 各 90ms 琶音) / bossRoar(双失谐锯齿 260→55 0.7s+lowpass 喉音 0.5s) / bossHit(正弦 150→70+噪声脉冲) / bossDie(怒吼变体+200→30Hz 1.1s 下坠+尾部噪声消散) / guideTalk(方波 300/360 各 40ms 两声"吧吧") / plant(正弦 500→300 70ms) / altar(90+135Hz 拍频 0.6s, 不加抖动保拍频纯净)
+- 新增导出 Music: MusicModule {start/stop/setScene('title'|'day'|'night')/setEnabled} + MusicScene 类型。独立 music 总增益 0.55 直连 destination（与 SFX master 0.4 并列）
+- note→freq 工具: 正则解析 C4/A#3/Bb2, A4=440 十二平均律
+- 三首曲目（写死在代码里的音符表, 8 分音符网格）:
+  · Day: C 大调五声 104BPM 4/4 八小节循环(18.46s)。低音 C2 A1 F2 G2×2 每小节全音符(正弦 0.12); 旋律 26 个音(三角波 0.16+4Hz±8音分颤音+0.035s 音尾留白), 按任务规格逐小节录入(E4 G4 A4|G4 E4 D4|...|C4 3拍休止); 打击=每 8 分音符白噪声 highpass(6800Hz) tick 正拍 0.04/反拍 0.024
+  · Night: A 小调 66BPM 八小节(29.09s) 无打击。低音 A1 F2 C2 E2 各两小节(慢起音 0.3s); 旋律稀疏长音正弦 0.16+0.4s 长释放(空灵), 按规格逐小节录入
+  · Title: Cmaj7→Fmaj7→Am7→G 琶音垫, 每和弦 2s 上行 4 音(0.5s/音), 三角波 0.12+0.65s 释放重叠成垫, 8s 循环, 无旋律无鼓
+- 前瞻调度器: setInterval 100ms 轮询 + 提前 0.3s 排音; 时间一律 songStart+步号×步长 推导(AudioContext.currentTime 精确对拍, 长播放零浮点漂移), 步号 mod 循环无缝衔接; 停排期间(切歌淡出/静音/关闭)落后超一整循环时按整循环快进保小节相位续播
+- setScene: 立即停排新音符(switching 标志) + music 主增益 linearRamp 0.8s 淡出, 0.83s 后锚定新歌 0.25s 淡入; 连点自动合并(clearTimeout); 未启动/上下文 suspended 时仅记录场景
+- 静音联动(未改 engine.ts): SFX.setMuted 内部追加 applyMusicGain() — muted 时 BGM 增益目标 0 且调度器停排, 解除后自动续播; engine.toggleMute→SFX.toggleMute→setMuted 全链路自动生效
+- 健壮性: start() 幂等+内部 init()+resume 尝试; 调度器每帧检查 ctx.state!=='running' 即跳过(suspended 安全 no-op, 恢复后自动起拍); stop() 清 interval+switchTimer+淡出, 可重新 start
+- 冒烟测试 scratch-9d.ts（已删）: stub AudioContext/Param/Gain/Osc 后 56/56 通过 — 14 新 SFX+13 旧 SFX 回归、suspended no-op、三场景切换排音符、静音联动(music gain 目标 0/0.55 且停排/恢复)、setEnabled/stop 幂等与重启、快速连点 setScene 合并、淡出中途 setEnabled(false)/stop 边界
+- tsc --noEmit: 项目源码 0 错误（仅剩并行任务 scratch-9a/9b.ts 临时文件与 examples//skills/ 预存量）; bunx eslint src/ 0 问题（bun run lint 的 12 error 全部来自非项目源码的 agent-ctx/*.js chunk, 与本次改动无关）
+
+Stage Summary:
+- 产出: src/game/sound.ts 扩展（14 SFX + Music 模块三场景 BGM）, 零外部文件零依赖; SFX/Music API 完全向后兼容, engine.ts 未动
+- 给 9-e 的集成建议: ①首次用户手势处(现有 SFX.init() 调用点)同时调 Music.start(); ②进世界/清晨→Music.setScene('day'), 夜幕降临(timeSec 过黄昏阈值)→setScene('night'), 玩家死亡或返回标题屏→setScene('title'); ③静音无需额外接线——engine.toggleMute() 已有链路自动联动 BGM; ④若要独立"BGM 开关"设置项可直接暴露 Music.setEnabled; ⑤Boss 战可临时 setEnabled(false) 或后续加 'boss' 场景曲目(SONGS 表可扩展)
+
+---
+Task ID: 9-c
+Agent: general-purpose (实体/AI)
+Task: entities.ts 扩展 — 新敌怪 AI + 克苏鲁之眼 Boss + 向导 NPC + 投射物
+
+Work Log:
+- 仅改 src/game/entities.ts(+340 行), 所有既有导出签名不变(moveBody/tileAt/bodyInWater/mkPlayer/updatePlayer/spawnEnemy/updateEnemy/mkDrop/updateDrop/burst); gslime/bslime/zombie/eye 原逻辑逐字节保留(eye 撞墙三行抽成私有 flyWallBounce 供 bat/eos 复用, 语义等价)
+- updatePlayer: 冰面检测(脚下 1-2px 处 tileAt(p.x, p.y+1/+2)===T.ICE 且 onGround)→ 摩擦×PLAYER_CONF.iceFricMul(0.12)、加速×iceAccelMul(0.55); 新导出 bodyInLava(world, b)(脚底格或身体中心格===T.LAVA)
+- EnemyKind 增加 'bat'|'skel'|'lslime'|'eos'|'eoc'; Enemy 接口新增可选 Boss 字段 mode/aiT/dashLeft/phase(旧调用零破坏); spawnEnemy 对 eoc 初始化 mode='hover'/aiT=0/dashLeft=0/phase=0, 对 eos 随机 aiT(0-119)错开蓄力节奏
+- bat: 追击加速度 0.09 + sin(frame*0.31+id)*0.14 双轴独立相位抖动, 限速 2.6, 撞墙复用 eye 处理
+- skel: 僵尸走地 AI 变体——目标速度 0.9(近距 350px 内加速到 1.2), 撞墙跳 -6.1(僵尸 -6.6), stepUp 保留
+- lslime: 史莱姆跳 AI 变体——vy -(3.4~5.0)(≈-4.2±0.8), 水平 1.7, 追击半径 560
+- eos: aiT 计数状态机——1..120 帧缓慢逼近(加速 0.045/限速 1.4), 第 120 帧瞬间速度设为朝玩家单位向量×4.2, 121-145 帧(26 帧)保持冲刺不转向, 146 帧重置; 撞墙复用 eye
+- eoc(私有 updateEoc): 完整状态机——phase0: hover 150 帧(目标点玩家上方 130px, 转向加速 0.08/限速 2.3)→telegraph 30 帧原地震颤(vx*0.8+sin 抖动)→dash 3 次×42 帧(每次开始瞬间速度=朝玩家当前位置单位向量×6.5, Boss 身体中心瞄准 (px,py-20))→回 hover; phase1(hp≤45%瞬间切入, mode='spin'/aiT=0): spin 60 帧缓停蓄力→循环 hover 70 帧→4 连冲×36 帧×速度 8.0; isNight=false 强制 flee(vy=-4/vx*0.98, 粘性不再回头); 无重力, 撞墙轻反弹(用碰撞前速度×-0.5)
+- Guide NPC: mkGuide(x,y)(w12×h36, homeX=x)/updateGuide(world,g,px,frame)——90-240 帧决策(40%停/60%随机向, |x-homeX|>260 必朝家)+每帧硬边界掉头(走出 ±260 且仍朝外即转身); 速度 0.9; 撞墙且 onGround 跳 -6.8; 前方 2 格列脚下 4 格无实心→掉头; 玩家 60px 内停下面向玩家(不覆盖 g.moving, 玩家离开恢复); talkT>0 每帧-1; 水中重力减半; walkT 走路相位同玩家公式
+- Proj: mkArrow(初速 11 朝目标)/mkBomb(vx=clamp(dx/28,±4.5), vy=-(3.2+dist/55)下限-7)/updateProj 返回 'fly'|'stuck'|'explode'|'gone'; arrow: 重力 0.16/rot=atan2/下一位置半步+整步 solid 检测插墙(t 清零另计 60 帧消失)/t>300 消失/水中 vx*0.96+vy=min(vy+0.06,0.8) 缓沉; bomb: 重力 0.22/落地 vy=-vy*0.42+vx*0.72/撞墙 vx*-0.6(均用碰撞前速度)/t≥150 爆炸/入水立即 gone/入岩浆立即 explode(移动前后各查一次)
+- 测试(临时 scratch-9c.ts, 已删): stub document/localStorage + 真 World 类不 generate 手工摆地板, 52 项断言全过, 共模拟 19661 帧, 连跑 6 次无随机波动——bat 飞近玩家 minDist 6.8px 且 3000 帧无穿墙/密封盒关住; eoc phase0 序列 hover→telegraph→dash→hover、3 冲全 6.50、间隔全 42 帧、hover 悬停误差 17px, hp 压 40% 当帧切 spin、60 帧后 hover(70)→4 连冲全 8.00×36 帧, 天亮 flee 150 帧升 600px vy=-4; skel 400 帧逼近 300px+撞墙跳; lslime 最大跳速 4.44+跳近; eos 冲刺 4.20/平时≤1.4/冲后回慢; guide 6000 帧徘徊 523px 且不出 homeX±270、跨 1 格障碍、会跳、悬崖边掉头(max 1570<坑 1600)、玩家 60px 内面向+停、talkT 递减; arrow 水平 22 帧插墙+61 帧后 gone、t>300 gone、水中 vy≤0.8 缓沉插底; bomb 落地反弹/第 150 帧爆/水平撞墙反弹/入水 57 帧熄灭/入岩浆 63 帧即爆(早于引信); 冰面滑行 60.1px vs 石面 9.5px(6.3×)、12 帧加速 2.34 vs 3.10; bodyInLava 三态正确
+- 踩坑记录: ①箭入水过渡帧保留入水速度属正常离散物理(次帧才钳 0.8), 断言需跳过首帧; ②炸弹抛物线水平距离远超直觉(4.3px/f×80 帧≈350px), 水池/岩浆测试需近垂直投放否则飞过池子; ③t>300 判定是严格大于, t=300 当帧不消失
+- 环境注意: 并行任务共享仓库——期间 agent-ctx/*.js(9-0 调研的参考站 chunk)导致全局 lint 12 错误+2290 警告(先于本任务存在), src/ 全树 eslint exit 0、entities.ts 单文件 0 错 0 警; 曾观察到 src/game/* 全目录 mtime 被并行任务批量刷新, 已复核 entities.ts 内容完整(713 行)并重跑回归确认行为无损
+
+Stage Summary:
+- 交付: 仅 src/game/entities.ts 改动; 新导出 bodyInLava / Guide+mkGuide+updateGuide / Proj+mkArrow+mkBomb+updateProj; EnemyKind 扩至 9 种; Enemy 可选 Boss 字段; 验证 tsc(过滤 examples/skills)零错误 + eslint entities.ts 零错零警 + 52 项 headless 断言全过(19661 帧)
+- 给 9-e(引擎集成)的接口备忘:
+  1) bodyInLava(world, body): boolean — 玩家/敌怪岩浆判定; 玩家掉血节奏用 PLAYER_CONF.lavaDmg(28)/lavaTick(30)
+  2) 敌怪生成: spawnEnemy('bat'|'skel'|'lslime'|'eos', x, y) 正常刷; ENEMY_DEFS 已带 def(减伤)/boss 标志, 引擎结算伤害时读 e 对应 def: ENEMY_DEFS[e.kind].def ?? 0; lslime 免疫岩浆伤害需引擎特判(kind==='lslime' 时跳过岩浆扣血)
+  3) eoc: spawnEnemy('eoc', x, y) 夜晚召唤; 引擎每帧 updateEnemy 照常; 观察 e.phase 0→1 跳变可触发狂怒音效; e.mode==='flee'(天亮)时跳过接触伤害并在离屏后 e.dead=true 移除; 注意现有白天夜怪随机消散逻辑(1.2%/帧)会误杀 boss——需对 boss 字段(ENEMY_DEFS[kind].boss)豁免, 改由 flee 兜底
+  4) guide: mkGuide(spawnX, spawnY) 出生点附近; updateGuide(world, g, p.x, frame) 每帧; 玩家交互时置 g.talkT=180 左右(头顶气泡), 台词从 GUIDE_LINES 随机取; 不与敌怪互判(引擎侧排除)
+  5) 投射物: 弓用 mkArrow(p.x, p.y-18, aimX, aimY)(消耗 IT.ARROW), 炸弹用 mkBomb(同参, 消耗 IT.BOMB); 每帧 updateProj(world, proj) 按 返回值处理: 'fly' 保留 / 'stuck' 保留等其自然 'gone' / 'explode' 移除并执行爆炸(破坏方块+范围伤害 IT.BOMB dmg=60) / 'gone' 移除; arrow 命中敌怪判定引擎自做(圆心距离<12), bomb 引信与碰撞全在 updateProj 内
+  6) AI 参数速查: bat 追0.09+抖0.14限2.6 / skel 0.9(近1.2)跳-6.1 / lslime vy-3.4~-5.0 水平1.7 / eos 慢1.4→120帧蓄→4.2×26帧 / eoc hover150(±130px上方,2.3)→颤30→3×42冲6.5 / p1: spin60→hover70→4×36冲8.0 / flee vy-4
+
+---
+Task ID: 9-a
+Agent: sub (世界生成)
+Task: 重写 world.ts 世界生成 — 六大群系 + 空岛 + 地狱 + 宝箱/生命水晶/祭坛 + 岩浆液体系统
+
+Work Log:
+- 仅改 src/game/world.ts (852+/166-), constants/engine/entities/render 等未动; 引擎旧 API (get/set/isSolid/updateSkyColumn/activateAround/tickWater/tickGrass/fellTree/clearFurniture/encode/decode + 全部字段) 完整保留, `new World(seed)` 默认小世界行为不变
+- 新增 API: biome:Uint8Array(按列) / hellY / chestSpawns:ChestSpawn[](主格=TL) / altarSpawns / lavaActive:Set / biomeAt(x) / generate(seed,w?,h?) 参数化尺寸 / constructor(seed?,w?,h?) 内 initSize 重建全部数组(不再定长)
+- 群系布局: [边森林|腐化150-240|雪原150-240|缓冲30-60|中央森林90-130(出生)|沙漠140-220|丛林170-260|蘑菇110-180|缓冲|边森林], 宽度随机、超宽按比例压缩(保底60%下限+扣最大块), 边界±3列渗透, 交界 8-12 列地表振幅滑动平均过渡(沙漠×0.5/丛林×1.5)
+- 群系地表: 沙漠=沙8-14层直下石头+仙人掌2-5高(无水塘); 雪原=雪4-8层+泥土+地下ICE团块(噪声>0.66)+池塘结冰1-2格; 腐化=腐化草+泥4-6+黑檀石6-10+地下团块(>0.7)+2-3条正弦摆动裂隙(宽4-6深60-110,井壁黑檀石,井底5x3空腔放祭坛)+矮紫树5-8; 丛林=丛林草+泥15-25+泥团块(>0.6)+大树10-16冠半径3+藤蔓10%垂2-6格+水塘翻倍; 蘑菇地=草地不长树改巨型蘑菇(柄6-12+椭圆伞盖3-5宽2-3厚,间距6-12)
+- 植被派发按"落点列群系"判定(修掉了步距群系与落点群系不一致导致蘑菇长进森林的bug)
+- 地狱(hellY=h-42): ASH大空腔丘陵(blob>0.58/worm带宽0.085阈值放宽)+狱岩脉30-60条×4-8格(pow0.6偏深+起点8次重试找ASH)+底部h-16..h-4空气→岩浆海+h-3封底防悬空+hellY附近4-8个小岩浆池+底2行基岩, 墙W_STONE
+- 空岛3-6个: y22-46且整体高于最低地表≥25行, 左右区避开出生±60列分槽, 椭圆泥土12-20×5-8+顶面草+内埋金矿3-6+顶上宝箱(tier island)+40%小树
+- 地下通用: 洞穴/黏土/洞穴湖保留, 4种矿脉数量×w/1100缩放、深度按 dirtLine 均值+h 参数化覆盖新尺寸; 生命水晶12-18(洞穴底AIR+下方实心,深度dirtLine+35..h-50,避液体); 宝箱=地表5-8+洞穴/深层18-26(dirtLine+50分界)+空岛3-6+地狱3-5, 2x2家具组且BL/BR下方必须实心; 祭坛=裂隙底1-2+深层洞穴4-6
+- 液体升级: activateAround 同时激活水/岩浆; tickWater 内水每帧、岩浆每3次调用一轮(规则同水直落→斜落); 活跃水/岩浆4邻相遇→岩浆变OBSIDIAN+水变AIR(双active清理+onTileChanged); decode 扫描重建 lavaActive
+- tickGrass: JUNGLE_GRASS蔓延MUD顶面(8邻域), CORRUPT_GRASS仅腐化列±12内蔓延DIRT(nearCorruption限制), 被盖住的丛林草/腐化草退化MUD/DIRT; fellTree 清理窗口扩为7x8覆盖全部4种树冠(LEAF/LEAF_SNOW/LEAF_JUNGLE/LEAF_CORRUPT, 丛林冠高7行故比规格7x6多留2行)
+- 存档: encode 增加 biome/hellY/chestSpawns/altarSpawns (v=1不变), decode 缺省容忍(旧档 biome全0/空宝箱/hellY=h-42), tiles/walls RLE 不变
+- 出生点: 中央森林中心, ±6列整平(上方24行清空+填洼+草皮), 树/宝箱放置时避开±8列
+
+测试 (scratch-9a.ts 用 bun 跑过后已删):
+- 三尺寸(1100x340/1500x400/1900x460)全量断言通过: 6群系齐全✓ chestSpawns≥25(实际33/38/34)✓ 生命水晶≥12(15/16/13)✓ altarSpawns≥4(6/6/7)✓ 空岛≥3(4/3/4,全部高于最低地表25行)✓ 同seed两次生成tiles逐格一致✓ 出生点列FOREST+±6列平整+上方无物+下方实心✓ 地狱LAVA(6.6k-14k)与HELLSTONE(135-193)✓ 底2行基岩✓ 雪原ICE✓ 丛林MUD+VINE✓ 腐化CORRUPT_STONE+裂隙✓ 群系植物各归其位(3列冠幅容忍)✓
+- 液体冒烟: 水岩浆相邻→OBSIDIAN+水蒸发✓ 岩浆每3tick缓慢下落✓ fellTree清丛林树冠33格✓
+- encode/decode roundtrip tiles一致 + 新字段还原 + lavaActive/waterActive重建 + 旧档(无新字段)容忍✓
+- 性能: 生成 60-320ms/尺寸(要求1.5s内); 存档 127-282KB
+- 稳定性: 额外 5 seed × 3 尺寸 = 15 世界全部通过同套核心断言
+- ASCII 全景目检: 群系条带顺序正确, 空岛/裂隙/岩浆海/藤蔓/蘑菇群/矿脉分层均符合预期
+
+Stage Summary:
+- 产出: src/game/world.ts 全量重写(1172行), 世界生成确定性(同seed+同尺寸=逐格一致), 全部硬性要求达成
+- 已知偏离: ①fellTree 清理窗口 7x8(规格7x6, 为完整覆盖丛林7行树冠) ②地狱墙用 W_STONE(规格如此), 沙漠/雪原/丛林墙也维持 W_DIRT/W_STONE 二色(textures.ts 仅有这两种墙贴图, 属 9-b 范围) ③腐化"魔金矿脉"按规格跳过(魔金只由Boss掉落)
+- 衔接: 9-e 引擎集成时用 new World(seed, WORLD_SIZES[size].w, .h) 创建对应尺寸; chestSpawns/altarSpawns 供战利品填充与Boss召唤物合成定位; tsc 0 错误(仅 examples/skills 与并行中 的 textures.ts 有既有错误), eslint src/game/world.ts 0 问题
+
+---
+Task ID: 9-b
+Agent: general-purpose (像素美术)
+Task: textures.ts + sprites.ts — 全部新增内容的程序化像素贴图与精灵
+
+Work Log:
+- 仅改 src/game/textures.ts(+630 行)/src/game/sprites.ts(+300 行), GameTextures 既有字段/方法签名全部不变只增; drawHumanoid 腿部坐标抽成局部变量(数学逐字节等价), 其余旧绘制路径零改动
+- textures.ts — tiles Map 新增 19 种方块×3 变体(T 27-61 非多格家具全覆盖, 含 LAVA 液体块): SAND 暖沙细颗粒/SNOW 近白闪光点/ICE 不透明底+浅蓝斜条纹+左上高光角/MUD 湿泥深斑/JUNGLE_GRASS 自包含整块(下泥上草皮+顶缘 2px 草须+草根下探)/CORRUPT_STONE 暗紫灰+两条硬朗直线裂纹/CORRUPT_GRASS 自包含(下泥土上紫草)/ASH 软噪点/HELLSTONE 暗红底+4-6 处亮橙余烬(强对比)/LAVA 橙红+亮黄斑点/OBSIDIAN 近黑+紫高光斜线+玻璃质高光角/MUSH_STEM 苍白蓝白竖纹(边暗中亮)/MUSH_CAP 亮蓝伞盖+顶亮面+底 3px 深蓝边+白色发光点/CACTUS 绿柱左右深边+边缘白刺/VINE 透明底 1-2px 摆动绿藤+侧叶/SAPLING 透明底小树芽/LEAF_SNOW(#b8d8c8)/LEAF_JUNGLE(#3aa04e)/LEAF_CORRUPT(#8a6aa8) 复刻 drawLeaf 换色; 实心地形块统一 edgeShade(底/右 1px rgba 0.14 微暗)
+- textures.ts — sprites 新增 6 件多格家具整图: doorC(16x32 门框+三段门板+金把手)/doorO(16x32 门框+贴左薄门板)/chest(32x32 拱盖+开合缝+金色包边+中央锁扣跨缝)/altar(32x32 暗紫石台+台面血色符文+中央红眼球+rgba 红微光)/table(32x16 桌板+双腿+下横撑)/chair(16x16 侧视); 新增 GameTextures.crystalFrames(16x16 x2 粉水晶心, 帧亮/暗+晶面切缝+帧 2 边缘扩 1px 微缩放做脉动, 心形轮廓复用 HEART_ROWS)
+- textures.ts — icons 补齐 IT 1-70 全部 70 个(此前 1-27 已有): 方块类 9 个复用 tiles(SAND/SNOW/ICE/MUD/ASH/OBSIDIAN/EBONSTONE/CACTUS/HELLSTONE_ORE); 绘制类 19 个: BOW 弓臂弧+竖弦/ARROW 斜杆+箭头+尾羽/BOMB 黑球白高光+引线火花/LENS 黑晶状体+高光/LIFE_CRYSTAL=crystalFrames[0]克隆/EYE_SUMMON 红巩膜血丝+竖瞳/DEMONITE_ORE(drawOre 暗绿)/DEMONITE_BAR+HELLSTONE_BAR+COPPER_BAR(barIcon 新 METALS 锭色)/NIGHTMARE_PICK(pickIcon 紫魔金)/MOLTEN_PICK(炽橙镐+3 火星点)/LIGHTS_BANE(暗紫宽剑+紫光边 3px)/VOLCANO(橙红巨剑+火焰纹)/ACORN/门宝箱桌椅 scaledIcon 缩小版; 盔甲 15 件=helmetIcon(侧视盔顶+面甲缝)/mailIcon(肩甲+躯干+中缝臂缝)/legsIcon(裤形+膝盖高光) × ARMOR_COLORS 五套, 暗影套加 #8a6ab0 紫光边点; shadeHex(hex,f) 颜色乘法工具
+- textures.ts — walls Map 新增 W_SAND/W_SNOW/W_MUD/W_EBON(wallFrom 同款暗色罩); anchors 新增 NIGHTMARE_PICK/MOLTEN_PICK=[4,12]、LIGHTS_BANE/VOLCANO=[3,11](并入既有 forEach); glowBlue(蓝紫)/glowRed(红橙) 64px radialGlow 同 glowWarm 规格
+- sprites.ts — drawHumanoid opts 新增 armor?: {head,body,legs}|null: 头盔覆盖原发区(盔顶+盔后+盔沿/后沿 1px 深色+护鼻眼前 1px 竖线+盔顶高光, 眼睛保留), 胸甲覆盖躯干+甲片暗缝(-21 行)+侧缝+领口高光, 上臂甲(静止/挥舞两分支均覆盖, 挥舞在旋转坐标系内绘制), 腿甲+膝盖 1px 高光; 暗部用 shadeHex(col,0.62)/高光 1.3, 受击 flash 时统一红闪; 导出 GUIDE_PALETTE(棕发蓝衣卡其裤)/SKELETON_PALETTE(骨白+黑眼窝)/LAVA_SLIME(#f07030/#c04010/#ffd060)
+- sprites.ts — 导出 drawEoC(ctx,x,y,w,h,phase,lookX,lookY,animT,flash): (x,y)=判定盒底部中心; phase0 白巩膜(#e8e0e4)+1px 暗边(#8a7080 大椭圆垫底)+4 条血丝 stroke+大虹膜 rw*0.46+黑瞳(朝 lookX/lookY clamp ±6px 偏移)+高光; phase1 虹膜换弧形黑口腔+上下各 5 颗白三角牙+眼体 sin(animT*0.22) ±1px 脉动; 底部 5 根 2px 锯齿触须随 animT 摆动; flash>0 整体半透明白(α0.55)覆盖
+- sprites.ts — 导出 drawBat(14x10 深棕身体+双三角膜翼按 sin(anim*0.35) 两帧上下扑+耳朵+1px 红眼朝向偏移)/drawEos(16x16 暗紫圆滚身+五点锯齿破烂翼两帧+中央单红眼瞳孔朝 dir+尾部三角尾鳍)/drawArrow(8px 箭矢 save/translate/rotate 按 angle 旋转+关闭平滑)/drawBomb(6px 像素圆黑球+引线+火花随 t 双频闪烁)
+- 测试(临时 scratch-9b.ts, 已删): Bun 无 DOM canvas, 自写 ~200 行最小 Canvas 桩(变换矩阵+fillRect/clearRect 精确标色/arc/ellipse 采样/stroke 包围盒/drawImage 无旋转逐像素复制) —— 205 项断言全过: tiles 27-61 非家具全覆盖且 2-3 变体 16x16 非空/icons 70 个全覆盖非空/sprites 6 新字段尺寸正确/crystalFrames 2 帧内容不同/walls 3-6/glowBlue/glowRed/anchors 齐全/drawEoC(3 相位) drawBat(上下扑+flash) drawEos drawArrow(4 角度) drawBomb(2 相位) drawSlime(LAVA) GUIDE/SKELETON 全部离屏无异常且画非透明像素/盔甲三色+眼白在网格中可见/盔甲+空中挥舞组合无异常; 另 ASCII 目检 17 张关键贴图(丛林草分层/蘑菇盖三段/仙人掌白刺/黑曜石斜纹/宝箱金边锁扣/祭坛眼球/EoC 两相位/盔甲小人头盔眼睛)均符合设计
+- 验证: bunx tsc --noEmit 仅 examples/skills 既有错误(src 零错误); bunx eslint src/game/textures.ts src/game/sprites.ts 零问题; 全局 bun run lint 有 12 错误全部来自 agent-ctx/*.js(9-0/9-1 调研下载的参考站 chunk, untracked, 先于本任务存在, 与 9-c 条目记录一致); agent-browser 实测 localhost:3000 标题屏→进入世界→开背包, 无 page error/console 错误, VLM 复审世界图+背包图均"正常"
+- 注意: 旧 render.ts 尚未消费新贴图(9-f 落地), 但 getTextures() 在真实浏览器全量构建通过(89 块新 canvas+58 新图标), 存量渲染路径逐像素不变
+
+Stage Summary:
+- 交付: 仅 textures.ts/sprites.ts 两文件; 新契约字段: GameTextures.crystalFrames[2]/glowBlue/glowRed, sprites.{doorC,doorO,chest,altar,table,chair}, walls{3,4,5,6}, anchors 补 4 件, icons 全 70 物品, tiles 补 19 方块; sprites.ts 新导出 GUIDE_PALETTE/SKELETON_PALETTE/LAVA_SLIME/drawEoC/drawBat/drawEos/drawArrow/drawBomb, drawHumanoid 支持 armor 参数
+- 给 9-e/9-f/9-g 的接口备忘:
+  1) 多格家具渲染(9-f): doorC/doorO 画在 DOOR_*_T 主格(门占上格 y 与下格 y+16, 整图 16x32 从主格左上画); chest/altar 32x32 画在 *_TL 主格; table 32x16 画在 TABLE_L; chair 16x16; LIFE_CRYSTAL 用 tex.crystalFrames[(g.frame>>4)&1] 脉动+glowBlue/glowRed 光晕(s=160/220 同熔炉) ; MUSH_CAP/HELLSTONE/LAVA/TORCH 同理挂对应 glow
+  2) LAVA 液体建议仍按 WATER 方式 fillRect 渐变绘制, tiles.get(T.LAVA) 备用静态贴图(3 变体)
+  3) drawEoC: (x,y)=e.x,e.y 底部中心(与现有 drawEye 同约定), lookX/lookY 传朝玩家的像素偏移(如 (px-e.x)*0.06), 内部 clamp ±6; flash 传 e.flash(>0 即白闪); phase 直接传 e.phase(9-c 已有 0/1 切换)
+  4) drawBat/drawEos: (x,y)=e.x,e.y, anim=e.anim, dir=e.dir, flash=e.flash>0; drawSlime(ctx, LAVA_SLIME, ...) 画熔岩史莱姆; drawHumanoid(ctx, SKELETON_PALETTE/GUIDE_PALETTE, {...}) 画骷髅/向导
+  5) 玩家盔甲: drawHumanoid 的 armor={head,body,legs} 三色, 从 HUD/store 的 armor 槽 item id 查 ARMOR_COLORS 得 [头,身,腿]; 向导 GUIDE_PALETTE 直接画; 投射物 drawArrow(p.x,p.y,Math.atan2(vy,vx))/drawBomb(p.x,p.y,p.t)
+  6) 图标: 全部 70 物品 tex.icons[id]/iconURL[id] 齐备, HUD/掉落物/合成面板可直接用; 挥舞锚点 anchors 含 4 件新武器工具
+
+---
+Task ID: 9-e
+Agent: general-purpose (引擎集成) + main (收尾验证)
+Task: engine.ts 大规模集成 — 17 项新系统
+
+Work Log:
+- engine.ts 1265→2389 行: newWorld(尺寸/种子/名字/Dev模式)、盔甲系统(穿戴/防御/三槽UI同步)、宝箱(确定性战利品/开关/搬运/挖掉撒内容)、门交互(开关/夹实体拒绝/放置校验)、智能光标(C键,ray-march首选目标)、全屏地图(Tab,explored半径42格标记+脏格mapCanvas)、生命水晶(+20上限至200)、EYE_SUMMON夜间召唤EoC、橡子种植+树苗成长(按草类型出对应树冠)、投射物(弓耗箭/炸弹抛物线/爆炸7x7破坏+范围伤害+自伤×0.5)、Boss战(EoC两阶段/阶段跳变音效/逃走/击杀掉魔金18-30+晶状体3-5)、向导NPC(出生点生成/右键对话GUIDE_LINES/徘徊AI)、分层刷怪(地表按群系/洞穴bat+skel/地狱lslime+bat/eoc豁免cap与消散)、敌怪岩浆伤害(lslime免疫)、玩家岩浆伤害(30帧/28伤)、minPower挖掘门槛(黑曜石65/黑檀石55/狱岩100,镐力不足消息)、存档v2(盔甲/宝箱/探索/devMode)+v1迁移、键位Tab地图/C智能/F飞行(dev)/G刷怪(dev)/N昼夜(dev)、Music接入(进世界day/入夜night/标题title)
+- 主代理收尾: 代理超时于写worklog前; 引擎代码完整, 主代理修复测试用例一处误用(zombie白天消散属正确行为, 改用skel验证岩浆扣血), 147/147 断言通过(宝箱取放/门夹实体/盔甲防御数值/智能光标ray命中/箭命中/爆炸清格/EoC全流程/水晶封顶/橡子成树/存读档v2/v1迁移/explored边界/minPower/devFly/分层刷怪池/向导对话/主循环1200帧冒烟/旧render兼容/性能0.01ms每tick)
+- scratch 已清理; tsc 全绿; lint 全绿
+
+Stage Summary:
+- 引擎新公共字段(9-f render 消费): g.projs(Proj[])/g.guide(Guide|null)/g.guideLine(当前台词)/g.guideTalkT/g.boss(Enemy|null)/g.smartTarget({gx,gy}|null)/g.mapOpen/g.explored(Uint8Array)/g.mapCanvas(w×h离屏)/g.chestOpen(idx|null)/g.devFly/g.saplings/g.chestContents/g.devMode/g.player.armor
+- EngineAPI 新方法: newWorld(size,seedStr,name,dev)/toggleMap()/toggleSmart()/closeChest()/clickChestSlot(i,right)/clickArmorSlot(slot,right)
+- ui 新字段已每帧/变化同步: defense/armor/chestOpen/chestSlots/boss/mapOpen/smart/devMode/playerName/biomeName + stations.altar
+- 给 9-f: 家具整图绘制锚点见 9-b 条目备忘; LAVA/WATER 液体渲染建议 fillRect; MUSH_CAP/HELLSTONE/LIFE_CRYSTAL 光晕用 glowBlue/glowRed; EoC drawEoC(e.x,e.y为底部中心,phase,lookX=朝玩家偏移*0.06,flash); 盔甲渲染读 player.armor→ARMOR_COLORS
+- 给 9-g: 键位表更新(Tab地图/C智能/M静音/E背包/Esc层级:地图>宝箱>背包>暂停); 新世界对话框调 engine.newWorld; HUD 心形支持20颗两行; GAME_CONTROLS 更新
+
+---
+Task ID: 9-f + 9-g
+Agent: general-purpose (渲染/UI, 均超时于收尾前, main 代为验证补记)
+Task: render.ts 渲染层升级 + HUD/Overlays UI 升级
+
+Work Log:
+- 9-f render.ts 395→756 行: 新方块分支(LAVA 波纹+冒泡+glowRed 光晕/HELLSTONE 余烬闪点/MUSH_CAP glowBlue/LIFE_CRYSTAL crystalFrames 脉动/JUNGLE_GRASS、CORRUPT_GRASS 自包含贴图/门 doorC doorO 16x32/宝箱 chest 32x32+开箱金光/祭坛 altar+浮动符文点/桌椅/树苗/藤蔓/三树冠/仙人掌/通用新地形块), 玩家盔甲渲染(armorColorsOf: ARMOR_COLORS 按 helmId+slot偏移 查色, 空槽回退 PLAYER_PALETTE), 新敌怪分支(bat/skel/lslime+glow/eos/eoc Boss: drawEoC+telegraph 抖动+不画通用血条), 向导(GUIDE_PALETTE+名牌+对话气泡 measureText 自适应+淡出), 投射物(drawArrow 旋转/drawBomb+引信火花), 智能光标高亮(青色 smartTarget), 全屏地图叠加层(等比缩放 mapCanvas+探索迷雾缓存: 首次全量/玩家跨16格局部重画/90帧定时/世界变更全量重建+玩家白点/出生点绿点/Boss红点/标题与坐标群系名)
+- 9-g HUD.tsx 642→808 行 + Overlays.tsx 198→369 行: 盔甲三槽(头/身/腿 40px+图标标签+tooltip 防御+)/宝箱面板(5x4 金边格+clickChestSlot)/防御徽章(心条旁)/Boss 血条(顶部中央金色名+红条+10%刻度+ARIA)/心形两行(20颗)/信息条群系名/智能光标切换按钮/GAME_CONTROLS 更新(Tab 地图/C 智能/dev 行)/tooltip 增强(盔甲防御/弓远程/炸弹); Overlays: 世界生成对话框(三尺寸 radio/种子输入/角色名/开发者模式 checkbox/开始返回)、标题按钮文案、暂停菜单玩家名+种子+dev 徽标、死亡屏玩家名
+- 验证(主代理): scratch-9f 56/56 通过(新方块/家具/敌怪/投射物/盔甲/智能光标/开箱微光/地图叠加/迷雾缓存四种失效路径/数百帧冒烟/中世界)后删除; tsc 0 错误; lint exit 0; agent-browser: 标题屏→生成新世界对话框(大世界+种子 terraria+Dev 开)→进入游戏(铜镐/斧/剑+火把10)→移动→E 背包→Tab 地图→N 夜晚→G 刷怪, 全程零 console 错误
+
+Stage Summary:
+- 全部 UI/渲染新内容落地; 截图存 agent-ctx/(new_game/walk1/inventory/map/night_spawn).png 待 VLM 视觉复审
+- 剩余: 9-int 主代理深度集成验证(VLM 视觉+更多交互) → 9-h 单文件版重建 → 9-i GitHub 推送
+
+---
+Task ID: 9-h
+Agent: general-purpose (单文件版打包)
+Task: standalone/main.ts 同步 9-e~9-g 新 UI + 重建 public/terraria.html
+
+Work Log:
+- 仅改 standalone/main.ts(667→1058 行) + 重新生成 public/terraria.html; 未动 src/ 任何文件、未动 build.ts(仅执行)
+- A1 世界生成对话框: 标题屏"生成新世界"改为打开 #gen 模态(三尺寸 radio 小/中/大+尺寸数字、种子 input maxlength32 留空随机、角色名 maxlength12 默认泰拉行者、开发者模式 checkbox、开始冒险(金)/返回、生成中 spinner+全部控件 disabled), 复刻 React 版 handleStartNewWorld: setTimeout(60) 先绘制按钮态再同步阻塞调 eng.newWorld(size,seed,name,dev)+enterWorld
+- A2 盔甲三槽: 背包面板顶部 #armor-row(盔甲标签+头/身/腿 40px 槽+badge 字+右侧 🛡防御 N), data-armor 委托 mousedown→eng.clickArmorSlot(slot,right), tooltip 走通用 data-tip-item
+- A3 宝箱面板: #chest-panel(st.chestOpen 时)置于背包面板 inner 顶部(金标题"宝箱"+✕关闭按钮→eng.closeChest+5x4 金边 .slot.gold 格 grid-cols-5), data-chest 委托→eng.clickChestSlot(i,right); panelOpen=invOpen||chestOpen 合并展示(引擎开宝箱不置 invOpen, 与 React 版一致), hotbar inv-open 态/背包显隐均跟随 panelOpen
+- A4 Boss 血条: #bossbar 顶部中央 top56/72px(金色名+text-shadow 描边、红渐变条金边 2px+9 根 10% 白刻度+hp/maxHp 数字、ARIA progressbar valuemin/max/now), st.boss&&maxHp>0 时显示, fill 宽度 calc((100%-4px)*ratio)
+- A5 心形两行+防御: heartsHTML 改显式分行(每行 10 颗, maxHp200→2 行 20 颗), 心条下方 #defense 徽章(盾 SVG+数字, title=防御 N), 换血量时重放 heartpulse 动画(classList remove+reflow+add 复刻 React key={hp})
+- A6 信息条: 加 .biome 行(st.biomeName 10px #9ab8e0)
+- A7 智能光标按钮: #infobar 下方 #smart-btn(十字准 SVG+"智能 开/关", on 态金框金字, aria-pressed/title"智能光标 (C)")→eng.toggleSmart
+- A8 暂停菜单: 玩家：{name} · 种子：{seed}(mono 字体, seed 空时整段隐藏)+开发者模式已开启徽标(st.devMode); 死亡屏 h2 改"{playerName}死亡了…"
+- A9 帮助面板: CONTROLS 更新为 11 行(E 背包/Tab 全屏地图/C 智能光标), 两处弹窗均加 .dev-line(devMode 时显示"F 飞行 · G 刷怪 · N 昼夜切换"金边行), 标题屏按钮文案改"操作指南"
+- A10 Tab 修正: 键盘绑定删掉旧"e||Tab 开背包", 仅 E 开背包(引擎 capture 阶段已 stopPropagation 接管 Tab/Esc 地图/宝箱优先级); main.ts Esc 处理补 chestOpen 分支(fallback, 与引擎优先级一致)
+- A11 tooltip: KIND_LABEL 加 armor 盔甲、STATION_NAMES 加 altar 恶魔祭坛(工作站指示灯加第 4 个"祭坛"); itemTipHTML 加 盔甲"防御 +N"(#9ab8e0)/弓"远程 · 伤害 N"(#a8d8a8)/炸弹"爆炸物 · 伤害 N"(#f0b090) 三分支(远程分支优先于普通伤害行)
+- A12 memo/委托: 新增 lastArmorKey/lastChestKey/lastBossKey/lastSmartKey/lastDefenseKey/lastPausedKey/lastDeadKey/lastHelpDevKey 分区 memo, 全部沿用既有"key 变化才重绘innerHTML"模式; slotHTML 重构为 (slot,dataAttrs,cls,badge) 通用签名供 背包/快捷栏/盔甲/宝箱 四类槽复用
+- B 构建: bun standalone/build.ts → public/terraria.html 336.6KB(旧 168KB, 引擎+UI 大升级所致); 产物零 http(s) 引用(仅 data-URI favicon+运行时程序化贴图)、零 fetch; 存档键 tw-save-v2/v1 由共享 engine.ts 处理, 与 Next 版同源同键互通(已实测互通)
+- C 验证: bunx tsc --noEmit(过滤 examples/skills 既有 4 错)src/standalone 零错误; bun run lint exit 0
+- E2E(agent-browser, dev server /terraria.html): 标题屏→生成对话框(选大 1900x460+种子 terraria+名"测试勇者"+Dev 开)→进入世界✓; E 背包(盔甲三槽 40px+防御 4+4 工作站指示含祭坛)✓; Tab 地图开(canvas 采样 rgba(10,12,24,.92) 暗罩=15,23,41)/关且不开背包✓; C 智能开/关(aria-pressed 同步)✓; Esc 暂停显示"玩家：测试勇者 · 种子：terraria"+Dev 徽标✓; reload→继续上次冒险→大世界/名字/种子/Dev 全还原✓; 盔甲槽 tooltip"铜头盔/盔甲/防御 +1"✓、点盔甲槽取放(光标物品出现/回收)✓; 宝箱面板(20 金格+4 件战利品火把x12/木箭x52/木材x37/炸弹x5, 取放物品、E 关宝箱保背包、再 E 关背包)✓; 炸弹 tooltip"爆炸物 · 伤害 60"✓、木箭"弓的弹药"✓; Boss 血条(克苏鲁之眼 1800/1800→砍一刀 1799 条宽更新)✓; 死亡屏"测试勇者死亡了…"ovl open✓; 帮助面板 11 行+dev 行✓; 375x667 移动端 docW=375 无横向溢出(游戏/背包/标题/对话框 boxL16-R359)✓; 全程 0 page error/0 console 错误
+- 宝箱/Boss/盔甲/双行心 E2E 用临时 window.__dbg 调试钩子(teleport+openChestAt/spawnEnemy eoc/直接设 armor+maxHp)验证渲染路径, 验证后已整体移除并重建正式产物(grep __dbg=0), 正式产物另跑全流程冒烟(新世界生成→背包→地图→暂停)确认无回归
+- 截图 23 张存 agent-ctx/9h_*.png(title/gendialog/genfilled/game/inventory/armor_tooltip/inventory_armor/chest/boss/help/paused/deathx3/mobile_x3/final_x6/continue/map)
+
+Stage Summary:
+- 交付: standalone/main.ts(1058 行, +470/-78) + public/terraria.html(336.6KB); 12 项同步清单全部完成
+- 存档互通确认: 单文件版与 Next 版共享 localStorage tw-save-v2(引擎侧统一, 无需改动)
+- 遗留问题: ①弓(BOW 本体)的"远程 · 伤害"tooltip 分支未实测无弓存货(木箭/炸弹 tooltip 已验证, 分支代码相同结构); ②Boss 血条中途 hp 更新仅验证单次 1800→1799(机制与心条同为 memo 重绘, 风险低); ③产物 336.6KB 略超预期区间 200-300KB(引擎 9-e 大升级所致, 非打包问题)
+- 下游: 9-i GitHub 推送可直接携带新产物
+
+---
+Task ID: 9-int
+Agent: main
+Task: 集成验证 — 端到端实测 + 关键 Bug 修复
+
+Work Log:
+- tsc 0 错误 / lint exit 0 / dev server 全程 200 无错误
+- agent-browser 端到端: 标题屏→生成新世界(大1900x460/种子/角色名/Dev)→进入(初始四件套+向导在出生点)→飞行探索(白天森林→群系→地狱岩浆狱岩→洞穴)→E 背包(盔甲三槽)→Tab 全屏地图→C 智能光标→N 昼夜切换→G 刷怪, 全程零 console 错误
+- Boss 战全生命周期实测(存档注入装备+夜间+可疑眼球): 右键召唤(需避开向导48px对话半径)→phase0 悬浮/震颤/3连冲→玩家被击杀→死亡重生→【修复1】Boss 存活战斗继续→压血线45%触发 phase1 spin+4连冲→黎明 flee 逃走(消息+血条消失)→再次召唤→击杀: 掉落 27 魔金矿+4 晶状体+「你击败了克苏鲁之眼！」
+- 【修复1·关键】engine.ts 三处: ①tickDead 70格过滤器补 Boss 豁免(死亡画面期间 Boss 不被距离清除) ②重生清怪过滤器补 Boss 豁免(原 bug: 玩家死亡重生→悬浮在出生点上空的 Boss 被静默删除, 表现为"Boss 无声消失", 已实测复现并修复) ③向导右键对话半径 60→48px(减少站在向导身边时右键使用物品被拦截)
+- 单文件版随修复重建: public/terraria.html 336.7KB
+- VLM 视觉评审因账户级 429 限流未能执行本轮截图复审; 视觉质量由 9-b(205项贴图断言+ASCII目检)/9-f(56项渲染断言)/9-h(23张E2E截图)覆盖; 截图存档 agent-ctx/(new_game/biome1/biome2/hell/cave/inventory/map/night_spawn/boss1-3).png
+- 排障记录: 工具输出管线会吞 ESC 转义序列([h/[m), 导致源码显示疑似损坏(ItemDefs[held → ItemDefseld / w-[min( → w-in(), 实为显示假象, base64 验证源码完好
+
+Stage Summary:
+- 全部 9 系列任务完成: 群系世界/贴图精灵/实体AI/音效BGM/引擎17项系统/渲染/UI/单文件版/集成验证
+- 剩余: 9-i git 提交推送
+
+---
+Task ID: 9-int (补充)
+Agent: main
+Task: 群系/移动疑云排查 — 最终结论
+
+Work Log:
+- 现象: agent-browser keydown 走路"不动"、小地图白点不动、群系名一直"森林"
+- 排查: 白点居中=小地图窗口跟随(正常行为,不能证位移); 跨 CLI 调用触发 window blur → 引擎 onBlur 清空按键集(对真实用户是正确行为, 纯测试工具问题); 走路撞 2+ 格悬崖卡住(正常玩法, 需手动跳)
+- 决定性验证: 单次 eval 页内按住 KeyA 1.6s → 地形哈希大变(玩家移动✓); 页内 12s 跳走 → 群系 森林→雪原; 再 20s → 雪原→腐化之地 (世界群系布局+群系名显示+移动全部正常)
+- 结论: 游戏无 bug; 截图 agent-ctx/final_biome.png (腐化之地)
+
+Stage Summary:
+- 9 系列全部完成, 进入 9-i git 提交推送
