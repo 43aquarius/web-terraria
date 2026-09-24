@@ -547,3 +547,126 @@ Work Log:
 Stage Summary:
 - 10 系列全部完成: 10-0 规格文档 → 10-a/b/c 并行重写(贴图/精灵/渲染) → 10-d 验证 → 10-e 交付
 - 交付物: Next.js 版(/) + 单文件版(/terraria.html) 双形态同步升级, 视觉对齐参考站标准
+
+---
+Task ID: 12-0
+Agent: main
+Task: 原版素材获取与逆向分析(11/12系列前置)
+
+Work Log:
+- 下载 terraria.space-z.ai 全部 197 个原版 PNG 素材到 public/assets/(curl 并行, WebP→PNG sharp 转换, 197/197 校验为真 PNG, 共 1.7MB)
+- 逆向参考站渲染 JS(beautify 610KB): 完整提取以下逻辑——
+  - 帧查找表: S=[6,2,9,2,6,5,9,0,12,12,5,1,12,4,2,10](泥土/草/石, step16), C=[12,1,9,1,12,5,9,0,12,12,5,1,12,4,1,0](木, step16), _=[0,1,2,1,0,3,2,4,5,5,3,4,5,4,1,3](矿/沙 step17, 腐化草/黑檀石/灰烬/泥/丛林草/黑曜石/狱岩等 step18)
+  - 邻接帧选择 rN: idx = up|right<<1|down<<2|left<<3, flipY 规则(上同下不同时上下互换+垂直翻转)
+  - 同族融合 rG: {dirt,grass,corrupt_grass} / {stone,iron,copper,silver,gold,ebonstone,demonite} / wood / sand / {mud,jungle_grass} / obsidian / ash / hellstone / obsidian_brick / blue_brick
+  - 瓦片映射: dirt_tile_set / GrassTilesetTerraria / stone_tile_set / wood_tileset / Copper_ore_tileset / Iron_Ore_tileset / silver_ore_tileset / Gold_ore_tileset / sand_block_tileset / Corrupt_grass_tileset / Ebonstone_tileset / Demonite_ore_tileset / Obsidian_tileset / Ash_block_tileset / Mud_tileset / Jungle_grass_tileset / Hellstone_tileset / Obsidian_brick_tileset / Blue_brick_tileset
+  - 墙: dirt_wall_tileset / Wood_wall_tileset / Blue_brick_wall_tileset 取 (0,0,16,16) 帧 + 0.45 暗化
+  - 玩家: player_spritesheet 380x30 = 19帧x20x30; 帧0站立/1-4挥击/5跳跃/6-18走路; 绘制 64x96(参考站32px格); 盔甲用 *_ingame.png 叠绘
+  - 敌怪布局: Zombie 3帧x34x46 / Skeleton 7帧x60x48 / 绿蓝熔岩史莱姆 2帧x32x24 / Demon_eye 2帧x37x22 / Cave_Bat 4帧x28x24 / Eater_of_souls 2帧x42x78 / EoC 两相位 80x80 / EoW 头/身/尾 60x60 / Guide 15帧表[[0,26],[29,30]...] / Old_man 40x46
+  - 树: tree_example.png 76x142 整树精灵, 高度=(heightTiles+3)*32 拉伸, 奇数 variant 水平翻转
+  - 高草: Tall_Grass_1-6 (8x18) 24px 高 + 风摆 shear + 丛林绿色叠加
+  - 背景: 玩家深度选层(y<15%森林/腐化, <30%地下, <50%洞穴, <70%熔岩, 其余地狱), 高度铺满视口 + 0.5 视差横向平铺
+  - 物品图标: 全部 *_item.png / 工具/武器 PNG
+- 已创建 src/game/assets.ts 接口骨架(帧表/布局常量/绘制函数签名/图标覆盖钩子) — 12-a 实现体, 12-b 渲染接入, 双方以该文件签名为唯一契约
+
+Stage Summary:
+- 素材就绪: public/assets/ 197 个原版 PNG; 参考站渲染逻辑全部解密并存档于本节
+- 契约就绪: src/game/assets.ts 骨架(TILE_SHEET/frameFor/LAYOUT/drawImg*/applyItemIcons)
+- 下一步: 12-a 实现 assets.ts / 12-b render.ts 接入 / 12-c 手机端适配(并行)
+
+---
+Task ID: 12-c
+Agent: general-purpose (手机端适配)
+Task: 手机端触屏适配与相机修复 — viewport meta / 引擎触屏输入 / 触屏交互层 / HUD 触屏可用
+
+Work Log:
+- 按序阅读 worklog.md(末两节 10 系列+12-0)/ engine.ts(mount/unmount/resize/onMouse*/onKeyDown/moveInput/tickGame 移动跳跃段/followCam/setEngine-getEngine)/ GameCanvas.tsx / HUD.tsx 全文 / layout.tsx / page.tsx / globals.css / Overlays.tsx(全部 onClick 已可用) / store.ts / render.ts 小地图位置(只读)
+- **根因确认**: layout.tsx 无 viewport 导出 → 移动浏览器以 ~980px 虚拟视口渲染再整体缩放, canvas CSS 尺寸≠显示尺寸 → 画面比例错乱+玩家坐标错位跑出画面; 次因: 无触屏输入 / 地址栏收放 resize / iOS 安全区
+- src/app/layout.tsx: 新增 `export const viewport: Viewport`(Next 16 规范) = device-width / initialScale 1 / maximumScale 1 / userScalable false / viewportFit cover / themeColor #000000; 修掉主因
+- src/game/engine.ts(只加不改, 现有键盘鼠标路径 100% 原样):
+  - 新公共字段 `touch = { active, mx, my, jump, mine }`(mx/my ∈ [-1,1])
+  - 新公共方法 `touchAt(xCss, yCss, phase)` — 世界触摸转发入口, 'start'=鼠标移动+左键按下(含 SFX.init/Music.start, 对齐 onMouseDown), 'move'=移动, 'end'=左键抬起; 坐标单位与 onMouseMove 一致(画布内 CSS px)
+  - moveInput(): 移动/跳跃/下平台改为键盘 ∪ 触屏并集(tmx<-0.15 左 / >0.15 右 / tmy>0.6 下平台 / touch.jump 等同按住空格, 保留"按住跳更高"); 精准跳跃/下跳机制不受影响
+  - resize(): 检测 vw/vh 变化 >1px(旋转屏/地址栏收放)→ 相机立即对准玩家(followCam 目标位 px-viewW/2, py-viewH*0.62 + clampCam); mount/unmount 挂/卸 window.visualViewport 的 resize 监听(比 ResizeObserver 更及时)
+  - followCam() 兜底: 玩家越出相机中心 0.5 视口范围 → 插值系数 0.14→1(瞬移回中), 根治"跑到画面外"
+- src/components/game/TouchControls.tsx(新建 242 行): 仅触屏设备渲染('ontouchstart' in window || maxTouchPoints>0, useSyncExternalStore 空订阅模式 SSR 安全——规避 react-hooks/set-state-in-effect lint 报错)
+  - 世界触摸层 .tc-world(全屏 pointer-events-auto, pointer 事件+setPointerCapture, 单指跟踪第二指忽略): pointerdown/move/up → eng.touchAt(clientX-rect.left, clientY-rect.top, phase); globals.css `@media (pointer: fine)` 下整层 pointer-events:none —— 混合设备(触屏笔记本)鼠标/滚轮/右键/中键仍直达画布走引擎原生事件, 桌面零回归
+  - 左下虚拟摇杆: 120px 圆盘(border-white/40 bg-white/10 backdrop-blur)+48px 手柄(bg-white/30), safe-area 左下 24px; 拖动半径 40px/死区 8px → eng.touch.mx/my; touch-none
+  - 右下跳跃按钮: 88px 大圆钮 safe-area 右下 24px, ChevronUp 图标, pointerdown→touch.jump=true+SFX.init, pointerup/cancel→false
+  - 每控件独立 pointerId 跟踪防第二指误触; 切屏/卸载时 clearTouchInput 清引擎触屏状态+mouse.left(防死亡/回标题后卡死自动挖掘)
+- src/components/game/HUD.tsx(最小可用性补丁):
+  - SlotCell onMouseDown→onPointerDown(触屏 tap 即触发, 鼠标左/右键语义不变), hover 改 onPointerEnter/Leave 且仅 pointerType==='mouse'(触屏不再弹残留 tooltip)
+  - 右下按钮组新增背包按钮(Backpack 图标, onClick=engine.toggleInventory, 等价 E 键)——原 HUD 仅键盘 E 可开背包
+  - HUD_CSS 追加 `@media (pointer: coarse)`: 右下按钮组抬到跳跃钮上方(bottom+128px)+触达≥44px、隐藏键盘提示文案、左下消息抬到摇杆上方(+152px)、背包/宝箱面板 bottom+150px(面板打开时摇杆/跳跃仍可操作)
+- GameCanvas canvas 加 touch-none; page.tsx 在 GameCanvas 与 HUD 之间挂 TouchControls(低于 HUD/Overlays, 不挡快捷栏/按钮); globals.css 加 html/body overscroll-behavior:none + -webkit-tap-highlight-color:transparent
+- 自测: bunx tsc --noEmit — 本任务 6 文件+新建 1 文件零错误(仅剩 examples/skills 既有 4 错 + assets.ts 12-a 骨架 19 错, 均为并行任务基线); bun run lint exit 0
+- 浏览器实测(agent-browser):
+  - iPhone 15 模拟(393x852, dpr3→引擎 dpr 上限 2): meta viewport ✓, scrollW==clientW 无横向滚动, canvas 393x852 全铺满且引擎 vw/vh 精确一致(虚拟视口缩放根除), 玩家相机中心偏移 (0,0)
+  - 375x667 / 667x375 双向: 旋转后引擎 vw/vh 即时更新+玩家仍居中(0,0), 无横向滚动; 摇杆/跳跃钮渲染 ✓
+  - 功能: 摇杆拖动 mx=0.75→-0.5/my=0.25→释放归零 ✓; 按住右推 1s 玩家 +97.7px 且始终居中 ✓; 跳跃钮按下 touch.jump=true+离地 ✓ 抬起 false ✓; 世界层触摸按住 3s 挖掉泥土块(tile 1→0) mouse.left/mine 起落正确 ✓; 快捷栏 tap 选中槽位 2 ✓; 背包按钮开合面板 ✓; 中途 quitToTitle 触屏状态全部清零(防卡死) ✓ 再进入控件回归 ✓
+  - coarse 让位规则模拟验证(headless 无 pointer 媒体匹配, 注入等效样式实测): 摇杆/消息、跳跃/按钮组零重叠, hint 隐藏, 按钮 44x44 ✓; 摇杆手柄拖动后像素采样确认视觉位移(新中心 [98,97,101] vs 原中心 [30,31,36])
+  - 桌面回归 1024x768: 无摇杆/跳跃/世界触摸层(maxTouchPoints=0), 鼠标 move→engine.mouse 坐标一致、按住 3s 挖掉方块(1→0) ✓, JS 派发 KeyD/Space 移动+146px/起跳 ✓(agent-browser CLI 的 keydown 命令在 headless 下不达页面, 非应用问题), 全程零 page error/console 错误
+  - 截图: agent-ctx/12c_mobile_375_portrait.png / 12c_mobile_375_coarse_sim.png / 12c_mobile_stick_drag.png / 12c_mobile_inventory.png / 12c_mobile_final.png
+
+Stage Summary:
+- 交付: 完整手机端适配 —— viewport meta(根因修复)+ 引擎触屏输入(touch 字段/touchAt/移动跳跃并集/visualViewport resize+相机即时回中/followCam 越界兜底)+ TouchControls 触屏交互层(世界触摸转发/虚拟摇杆/跳跃钮)+ HUD 触屏可用性(pointer 事件/背包按钮/coarse 让位)+ 画布 touch-none
+- 红线遵守: 未动 render/assets/textures/sprites/world; engine.ts 纯增量(新字段/新方法/resize 与 followCam 增强/输入并集), 键盘鼠标路径行为不变(桌面回归实测通过)
+- 已知说明: ①混合触屏笔记本(主指针 fine)世界触摸层按设计禁用, 触屏点击画布不挖矿(鼠标为主输入), 摇杆/跳跃钮仍可用; ②headless Chrome 无 pointer 媒体查询匹配, coarse 让位规则以注入等效样式验证, 真机必然匹配; ③单文件版(terraria.html)尚未包含触屏层(React 组件不在引擎内), 如需单文件触屏版由后续任务处理
+
+---
+Task ID: 12-a
+Agent: general-purpose (assets) [超时前完成代码, main 补记]
+Task: 实现 assets.ts — 原版素材加载/帧逻辑/图像化绘制/图标覆盖
+
+Work Log:
+- assets.ts 骨架 → 656 行完整实现: 加载器(逐文件 decode, 失败跳过)/帧表 S/C/_(并实测修正 step: 泥土草石木与腐化系均为 18px 步距, 矿+沙为 17px — 12-0 规格中"16"系误读, 实现时以参考站代码复核为准)/TILE_SHEET 20 材质映射/tileFamily 11 族/frameFor 邻接选帧(含 flipY 互换规则)
+- 派生贴图: snow/ice/clay 由 dirt/stone 整图像素色相偏移生成(getImageData 一次性处理)
+- 图像化绘制函数 15 个: 玩家(19 帧布局+盔甲 ingame 叠绘+挥舞帧 1-4)/僵尸(3帧x34x46)/骷髅(7帧x60x48)/向导(15 帧显式表)/三色史莱姆(2帧x32x24)/恶魔眼/蝙蝠(4帧)/噬魂者/EoC 双相位/EoW 三段/整树精灵(76x142 拉伸+tint 染色)/高草(风摆 shear)/火把(地面/墙双形态)
+- applyItemIcons: 70 个物品图标 PNG 覆盖(icons/iconURL/anchors)
+- main 补: 清单补缺(bg_* 7 背景/家具 12 件/dirt_wall_tileset/Skeletron 移除未用), ASSET_MANIFEST 导出(standalone 内嵌用), __TERRARIA_ASSETS__ 数据 URI 支持, TDZ 修复
+- 验证: tsc/lint 零错误; 浏览器 121→137 请求全 200
+
+Stage Summary:
+- 交付: src/game/assets.ts 完整实现(签名与 12-0 契约一致), 素材就绪后全渲染路径可用
+
+---
+Task ID: 12-b
+Agent: general-purpose (render) [超时前完成代码, main 补记]
+Task: render.ts 接入原版素材渲染
+
+Work Log:
+- render.ts 1051 → 1446 行: useAssets 就绪分支覆盖全渲染管线, 程序化回退 100% 保留
+- 瓦片: TILE_SHEET 映射的 20 材质走邻接选帧(同族融合判定), 原版贴图自带边缘→不再叠程序化描边; 狱岩保留余烬+光晕
+- 墙: dirt_wall_tileset(0,0,16,16) + 0.45 叠暗, 保留墙缘暗边
+- 树: 视口扫描树基(TRUNK 底格+下方实心)→ heightTiles 统计 → tree_example 整树精灵(按 x 排序, 变体翻转, 群系 tint: snow/jungle/corrupt 由树基邻草判定); TRUNK/LEAF* 逐格绘制跳过(残干/浮空冠回退)
+- 背景: drawImgBackdrop 深度分层(森林双图 100 格交替/腐化/地下/洞穴/熔岩/地狱), 高度铺满+0.5 视差平铺, 深层渐暗 0.15-0.5
+- 实体: 玩家/僵尸/骷髅/向导/三色史莱姆/眼/蝙蝠/噬魂者/EoC 全部图像化(IMG_OFF 锚点偏移对齐碰撞盒), flash=lighter 二次叠绘; 挥舞物品用 PNG 图标旋转叠绘
+- 家具: 工作台/铁砧/熔炉/宝箱/门(开关左右)/祭坛/椅子/平台/生命水晶(5帧动画)/树苗/高草 PNG 化
+- 掉落物/快捷栏/挥舞图标: 经 applyItemIcons 自动生效
+- main 补记: 无需返工, 一次通过
+
+Stage Summary:
+- 交付: render.ts 双路径渲染(原版素材优先/程序化兜底), 视觉与参考站同源
+
+---
+Task ID: 12-d
+Agent: main
+Task: 集成验证 + 修复 + 单文件版素材内嵌
+
+Work Log:
+- 发现并修复: assets.ts 清单缺 7 张背景图/12 件家具/dirt_wall_tileset(浏览器实测 bg 请求 0 → 补齐后 7/7)
+- standalone/build.ts 重写: ASSET_MANIFEST 137 个 PNG base64 内嵌(window.__TERRARIA_ASSETS__), 产物 1641KB 零外链
+- standalone/main.ts 补触屏层: tc-world 世界触摸转发(touchAt)/116px 虚拟摇杆(死区 0.13)/84px 跳跃钮; body.playing 才显示(标题/暂停可点); #hud z-index 35 保证快捷栏可点; coarse 下按钮组/消息让位
+- 浏览器全量验证(VLM 视觉评审 9 轮 + 程序化像素采样):
+  - 标题屏/世界: 原版贴图渲染正常, VLM 相似度 8/10
+  - 与参考站对比: 瓦片同源确认; 背景(修复后)/树木/角色同原版; 剩余差异为 UI 布局(我们自带小地图/更多状态, 属设计差异)
+  - 群系传送实测: 雪原(派生雪贴图正常)/丛林(泥 #5c4449 与原版 Mud_tileset 一致, VLM 误报)/腐化(黑檀石紫色正常)
+  - 夜间: 僵尸/史莱姆原版精灵, 火把光照自然
+  - 洞穴: 无光全黑/持火把径向衰减, 石头矿物原版贴图
+  - 战斗: 剑击杀僵尸(hp 20→dead); 挖掘: 泥土 1→0 掉落拾取(需 zoom 坐标换算, 引擎无 bug)
+  - HUD: 70 个物品图标 PNG 化(铜镐/泥土/盔甲全过)
+  - 单文件版: 进入世界渲染与主版一致, externalAssetReqs=0, 零 page error
+- dev.log 零异常; tsc/lint 零错误
+
+Stage Summary:
+- 全链路绿: 主版 + 单文件版双形态原版素材渲染, 移动端适配, 挖掘/战斗/光照/群系全部实测通过

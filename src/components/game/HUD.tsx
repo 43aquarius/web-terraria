@@ -14,7 +14,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { Crosshair, HelpCircle, Moon, Shield, Sun, Volume2, VolumeX } from 'lucide-react'
+import { Backpack, Crosshair, HelpCircle, Moon, Shield, Sun, Volume2, VolumeX } from 'lucide-react'
 import { ui, type Slot, type UIState } from '@/game/store'
 import { ItemDefs, RECIPES, type ArmorSlot, type ItemKind, type StationKind } from '@/game/constants'
 import { getTextures, type GameTextures } from '@/game/textures'
@@ -88,6 +88,19 @@ const HUD_CSS = `
 .hud-scroll::-webkit-scrollbar-track { background: rgba(10, 12, 26, 0.8); }
 .hud-scroll::-webkit-scrollbar-thumb { background: #6a76b8; }
 .hud-scroll::-webkit-scrollbar-thumb:hover { background: #8a96cc; }
+/* ---- 触屏适配(12-c): 主指针 coarse(手机/平板)时让位虚拟摇杆/跳跃按钮, 触达目标 ≥44px ---- */
+@media (pointer: coarse) {
+  /* 右下按钮组: 抬到跳跃按钮(88px+24px 安全边)上方 */
+  .hud-br { bottom: calc(env(safe-area-inset-bottom, 0px) + 128px); }
+  /* 键盘提示文案对触屏无意义 */
+  .hud-br-hint { display: none; }
+  /* 触达目标 ≥44px(Apple HIG 最小触控尺寸) */
+  .hud-ibtn { min-width: 44px; min-height: 44px; }
+  /* 左下消息: 抬到摇杆(120px+24px)上方 */
+  .hud-msgs { bottom: calc(env(safe-area-inset-bottom, 0px) + 152px); }
+  /* 背包/宝箱面板: 抬到摇杆/跳跃上方, 面板打开时仍可移动 */
+  .hud-panel { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
+}
 `
 
 /* ==================== Hooks / 基础组件 ==================== */
@@ -314,15 +327,19 @@ function SlotCell({
       type="button"
       aria-label={def ? def.name : '空槽位'}
       className={`relative flex items-center justify-center border-2 transition-colors focus-visible:outline-2 focus-visible:outline-[#f7d060] ${toneCls} ${className}`}
-      onMouseDown={(e) => {
+      onPointerDown={(e) => {
         if (e.button === 0 || e.button === 2) {
           e.preventDefault()
           onActivate(e.button === 2)
         }
       }}
       onContextMenu={(e) => e.preventDefault()}
-      onMouseEnter={() => onHover(slot ? slot.id : null)}
-      onMouseLeave={() => onHover(null)}
+      onPointerEnter={(e) => {
+        if (e.pointerType === 'mouse') onHover(slot ? slot.id : null)
+      }}
+      onPointerLeave={(e) => {
+        if (e.pointerType === 'mouse') onHover(null)
+      }}
     >
       {badge && (
         <span
@@ -562,7 +579,7 @@ export default function HUD() {
 
       {/* ---- 中下方:宝箱面板 + 背包 + 合成面板(背包或宝箱打开时) ---- */}
       {panelOpen && (
-        <div className="hud-fade-in hud-scroll pointer-events-auto absolute bottom-12 left-1/2 max-h-[calc(100vh-8rem)] w-max max-w-[calc(100vw-12px)] -translate-x-1/2 overflow-y-auto rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.92)] p-3 sm:p-4">
+        <div className="hud-panel hud-fade-in hud-scroll pointer-events-auto absolute bottom-12 left-1/2 max-h-[calc(100vh-8rem)] w-max max-w-[calc(100vw-12px)] -translate-x-1/2 overflow-y-auto rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.92)] p-3 sm:p-4">
           {/* 宝箱面板(20 格 5x4,边框偏金;Esc/E 由引擎关闭) */}
           {st.chestOpen && (
             <div className="mb-3 border-b-2 border-[#c0a050]/40 pb-3">
@@ -726,7 +743,7 @@ export default function HUD() {
       )}
 
       {/* ---- 左下:消息(半透明黑底圆角 + 金色左竖条,泰拉瑞亚聊天框风格) ---- */}
-      <div className="absolute bottom-3 left-3 flex max-w-[70vw] flex-col gap-1">
+      <div className="hud-msgs absolute bottom-3 left-3 flex max-w-[70vw] flex-col gap-1">
         {st.messages.slice(-6).map((m) => (
           <p
             key={m.id}
@@ -738,15 +755,23 @@ export default function HUD() {
         ))}
       </div>
 
-      {/* ---- 右下:静音 / 帮助按钮 + 提示文字 ---- */}
-      <div className="absolute bottom-2 right-2 flex items-center gap-2">
-        <span className="pointer-events-none text-[11px] text-[#e8e4d8]/60 [text-shadow:1px_1px_0_#000]">
+      {/* ---- 右下:背包 / 静音 / 帮助按钮 + 提示文字(触屏时按钮组抬到跳跃钮上方, 见 HUD_CSS) ---- */}
+      <div className="hud-br absolute bottom-2 right-2 flex items-center gap-2">
+        <span className="hud-br-hint pointer-events-none text-[11px] text-[#e8e4d8]/60 [text-shadow:1px_1px_0_#000]">
           C 智能 · M 静音 · H 帮助
         </span>
         <button
           type="button"
+          aria-label={invOpen ? '关闭背包' : '打开背包'}
+          className="hud-ibtn pointer-events-auto flex h-8 w-8 items-center justify-center border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
+          onClick={() => engine.toggleInventory()}
+        >
+          <Backpack size={15} aria-hidden />
+        </button>
+        <button
+          type="button"
           aria-label={st.muted ? '取消静音' : '静音'}
-          className="pointer-events-auto flex h-8 w-8 items-center justify-center border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
+          className="hud-ibtn pointer-events-auto flex h-8 w-8 items-center justify-center border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
           onClick={() => engine.toggleMute()}
         >
           {st.muted ? <VolumeX size={15} aria-hidden /> : <Volume2 size={15} aria-hidden />}
@@ -754,7 +779,7 @@ export default function HUD() {
         <button
           type="button"
           aria-label="操作说明"
-          className="pointer-events-auto flex h-8 w-8 items-center justify-center border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
+          className="hud-ibtn pointer-events-auto flex h-8 w-8 items-center justify-center border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
           onClick={() => setHelpOpen((v) => !v)}
         >
           <HelpCircle size={15} aria-hidden />

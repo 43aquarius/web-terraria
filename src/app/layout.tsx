@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
@@ -33,6 +33,21 @@ export const metadata: Metadata = {
     title: "Z.ai Code Scaffold",
     description: "AI-powered development with modern React stack",
   },
+};
+
+/**
+ * 移动端视口(12-c):
+ * - device-width + initialScale=1: 消除移动浏览器 ~980px 虚拟视口整体缩放(画面比例错乱/人物跑出画面的主因)
+ * - userScalable=false + maximumScale=1: 禁双指缩放(游戏画布自带触摸交互)
+ * - viewportFit=cover: 铺满刘海屏, 配合 env(safe-area-inset-*) 避让安全区
+ */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
+  viewportFit: "cover",
+  themeColor: "#000000",
 };
 
 export default function RootLayout({

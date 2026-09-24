@@ -26,7 +26,7 @@ body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,'PingFang SC','Micros
 img{image-rendering:pixelated}
 button{font:inherit}
 #game{position:fixed;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
-#hud{position:fixed;inset:0;pointer-events:none;display:none}
+#hud{position:fixed;inset:0;pointer-events:none;display:none;z-index:35}
 #hud.on{display:block}
 
 @keyframes fadein{from{opacity:0}to{opacity:1}}
@@ -313,6 +313,19 @@ button{font:inherit}
 .craft-list::-webkit-scrollbar-thumb:hover,#inv::-webkit-scrollbar-thumb:hover{background:#8a96cc}
 .craft-list{scrollbar-width:thin;scrollbar-color:#6a76b8 rgba(10,12,26,.8)}
 #inv{scrollbar-width:thin;scrollbar-color:#6a76b8 rgba(10,12,26,.8)}
+
+/* ---- 触屏控制层(仅触屏设备+游戏中显示; 桌面 pointer:fine 隐藏) ---- */
+#tc-world,#tc-joy,#tc-jump{display:none}
+@media (pointer:coarse){
+  body.playing #tc-world{display:block;position:fixed;inset:0;pointer-events:auto;touch-action:none;z-index:30}
+  body.playing #tc-joy{display:flex;position:fixed;left:max(16px,env(safe-area-inset-left));bottom:max(16px,env(safe-area-inset-bottom));width:116px;height:116px;border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(255,255,255,.08);backdrop-filter:blur(2px);align-items:center;justify-content:center;pointer-events:auto;touch-action:none;z-index:40}
+  #tc-joy-knob{width:46px;height:46px;border-radius:50%;background:rgba(255,255,255,.3);border:2px solid rgba(255,255,255,.45);pointer-events:none;transform:translate(0,0)}
+  body.playing #tc-jump{display:flex;position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(24px,env(safe-area-inset-bottom));width:84px;height:84px;border-radius:50%;border:2px solid rgba(255,255,255,.35);background:rgba(255,255,255,.1);color:rgba(255,255,255,.75);font-size:26px;align-items:center;justify-content:center;pointer-events:auto;touch-action:none;z-index:40;-webkit-tap-highlight-color:transparent}
+  body.playing #tc-jump:active{background:rgba(255,255,255,.22)}
+  /* 跳跃钮让位: 右下按钮组/消息上移, 避开摇杆与跳跃区 */
+  body.playing #hud-btns{bottom:118px}
+  body.playing #msgs{left:148px}
+}
 `;
 
 /* ==================== SVG 图标 ==================== */
@@ -550,6 +563,13 @@ const BODY_HTML = `
 
 <div id="tooltip" role="tooltip"></div>
 <div id="cursor-item"></div>
+
+<!-- 触屏控制层(仅触屏设备显示) -->
+<div id="tc-world" aria-hidden="true"></div>
+<div id="tc-joy" aria-label="移动摇杆">
+  <div id="tc-joy-knob"></div>
+</div>
+<button id="tc-jump" aria-label="跳跃">▲</button>
 `;
 
 /* ==================== 渲染 ==================== */
@@ -642,6 +662,7 @@ function render(st: UIState): void {
 
   // ---- 覆盖层可见性 ----
   $('hud').classList.toggle('on', playing);
+  document.body.classList.toggle('playing', playing);   // 触屏控制层仅在游戏中显示
   $('title').classList.toggle('open', st.screen === 'title' && !st.loading);
   $('gen').classList.toggle('open', st.screen === 'title' && !st.loading && genOpen);
   $('dead').classList.toggle('open', st.screen === 'dead');
@@ -1027,6 +1048,97 @@ function bindEvents(): void {
       if (!st.paused) getEngine()?.selectHotbar(k === '0' ? 9 : Number(k) - 1);
     }
   });
+
+  // ---- 触屏控制: 世界触摸转发 / 虚拟摇杆 / 跳跃钮(仅触屏设备; CSS 隐藏桌面) ----
+  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  if (isTouch) {
+    const eng = () => getEngine();
+    // 世界触摸: 单指按住 = 该处持续使用物品(挖/攻/放)
+    const world = $('tc-world') as HTMLElement;
+    let worldId = -1;
+    const rectOf = () => (document.querySelector('#game') as HTMLCanvasElement).getBoundingClientRect();
+    world.addEventListener('pointerdown', (e) => {
+      if (worldId !== -1) return;                      // 第二指忽略
+      worldId = e.pointerId;
+      world.setPointerCapture(e.pointerId);
+      const r = rectOf();
+      eng()?.touchAt(e.clientX - r.left, e.clientY - r.top, 'start');
+    });
+    world.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== worldId) return;
+      const r = rectOf();
+      eng()?.touchAt(e.clientX - r.left, e.clientY - r.top, 'move');
+    });
+    const worldUp = (e: PointerEvent): void => {
+      if (e.pointerId !== worldId) return;
+      worldId = -1;
+      eng()?.touchAt(-1, -1, 'end');
+    };
+    world.addEventListener('pointerup', worldUp);
+    world.addEventListener('pointercancel', worldUp);
+
+    // 虚拟摇杆
+    const joy = $('tc-joy') as HTMLElement;
+    const knob = $('tc-joy-knob') as HTMLElement;
+    let joyId = -1;
+    const joyCenter = (): { cx: number; cy: number } => {
+      const jr = joy.getBoundingClientRect();
+      return { cx: jr.left + jr.width / 2, cy: jr.top + jr.height / 2 };
+    };
+    joy.addEventListener('pointerdown', (e) => {
+      if (joyId !== -1) return;
+      joyId = e.pointerId;
+      joy.setPointerCapture(e.pointerId);
+    });
+    joy.addEventListener('pointermove', (e) => {
+      if (e.pointerId !== joyId) return;
+      const { cx, cy } = joyCenter();
+      const max = 38;                                   // 摇杆活动半径
+      let dx = e.clientX - cx, dy = e.clientY - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      const cl = Math.min(len, max);
+      dx = (dx / len) * cl; dy = (dy / len) * cl;
+      knob.style.transform = `translate(${dx}px,${dy}px)`;
+      const g = eng();
+      if (g) {
+        const nx = dx / max, ny = dy / max;
+        g.touch.mx = Math.abs(nx) > 0.13 ? nx : 0;      // 死区
+        g.touch.my = Math.abs(ny) > 0.13 ? ny : 0;
+      }
+    });
+    const joyUp = (e: PointerEvent): void => {
+      if (e.pointerId !== joyId) return;
+      joyId = -1;
+      knob.style.transform = 'translate(0,0)';
+      const g = eng();
+      if (g) { g.touch.mx = 0; g.touch.my = 0; }
+    };
+    joy.addEventListener('pointerup', joyUp);
+    joy.addEventListener('pointercancel', joyUp);
+
+    // 跳跃按钮
+    const jump = $('tc-jump') as HTMLElement;
+    let jumpId = -1;
+    jump.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      jumpId = e.pointerId;
+      const g = eng();
+      if (g) g.touch.jump = true;
+    });
+    const jumpUp = (e: PointerEvent): void => {
+      if (e.pointerId !== jumpId) return;
+      jumpId = -1;
+      const g = eng();
+      if (g) g.touch.jump = false;
+    };
+    jump.addEventListener('pointerup', jumpUp);
+    jump.addEventListener('pointercancel', jumpUp);
+    // 切屏/隐藏时清触屏状态防卡死
+    document.addEventListener('visibilitychange', () => {
+      const g = eng();
+      if (g && document.hidden) { g.touch.mx = 0; g.touch.my = 0; g.touch.jump = false; }
+    });
+  }
 }
 
 /* ==================== 启动 ==================== */

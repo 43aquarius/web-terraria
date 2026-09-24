@@ -4,7 +4,7 @@
  *            -> 光标高亮 -> 屏幕特效 -> 小地图 -> 全屏地图
  */
 
-import { T, TileDefs, ItemDefs, IT, ARMOR_COLORS, BIOME_NAMES, ENEMY_DEFS, TILE_COUNT } from './constants';
+import { T, TileDefs, ItemDefs, IT, ARMOR_COLORS, BIOME_NAMES, ENEMY_DEFS, TILE_COUNT, W_DIRT, BIOME } from './constants';
 import { drawSkyBackground } from './sky';
 import { mulberry32 } from './textures';
 import {
@@ -12,6 +12,12 @@ import {
   PLAYER_PALETTE, ZOMBIE_PALETTE, GUIDE_PALETTE, SKELETON_PALETTE,
   SLIME_GREEN, SLIME_BLUE, LAVA_SLIME,
 } from './sprites';
+import {
+  getAssets, loadAssets, TILE_SHEET, tileFamily, frameFor,
+  drawImgPlayer, drawImgZombie, drawImgSkeleton, drawImgGuide, drawImgSlime, drawImgEye,
+  drawImgBat, drawImgEos, drawImgEoC, drawTreeSprite, drawTallGrass, drawImgTorch, applyItemIcons,
+  type Assets,
+} from './assets';
 import type { ExtraLight } from './lighting';
 import type { GameEngine } from './engine';
 import type { World } from './world';
@@ -42,6 +48,100 @@ function armorColorsOf(
     body: pick(armor.body, 1, PLAYER_PALETTE.shirt),
     legs: pick(armor.legs, 2, PLAYER_PALETTE.pants),
   };
+}
+
+// ==================== 12-b: 原版素材接入 ====================
+
+/** applyItemIcons(用原版 PNG 覆盖 tex.icons/iconURL/anchors) 只需在素材首次就绪后执行一次 */
+let itemIconsApplied = false;
+
+/**
+ * drawImg* 实体绘制框的锚点偏移: 传给 assets.ts 的 (x, y) = 实体点 + 偏移 = 绘制框左上角。
+ * 对齐约定沿 sprites.ts 头部注释的"底部中心"锚: 图像底边 = 实体脚底/判定盒底(Body.y = 底),
+ * 水平居中(Body.x = 中心), 故偏移 = (-drawW/2, -drawH)(drawW/H 见 assets.LAYOUT)。
+ * 若 12-a 实现的锚点语义不同, 只需统一调整本表。
+ */
+const IMG_OFF = {
+  player: [-20, -60],     // 40x60
+  humanoid: [-20, -60],   // 僵尸/骷髅/向导 40x60
+  slime: [-20, -30],      // 史莱姆 40x30
+  eye: [-20, -30],        // 恶魔眼 40x30
+  bat: [-15, -20],        // 蝙蝠 30x20
+  eos: [-20, -40],        // 吞噬者 40x40
+  eoc: [-40, -80],        // 克苏鲁之眼 80x80
+} as const;
+
+/** 盔甲套装(以头盔 id 为 key, 同 armorColorsOf 的 +offset 规则) → 原版 ingame 贴图三件套名 */
+const ARMOR_IMG: Partial<Record<number, readonly [string, string, string]>> = {
+  [IT.COPPER_HELM]: ['copper_helmet_ingame', 'copper_chainmail_ingame', 'copper_greaves_ingame'],
+  [IT.IRON_HELM]: ['helmet_ingame', 'Iron_chainmail_ingame', 'Iron_greaves_ingame'],
+  [IT.SILVER_HELM]: ['Silver_Helmet_ingame', 'Silver_Chainmail_ingame', 'Silver_Greaves_ingame'],
+  [IT.GOLD_HELM]: ['Gold_Helmet_Ingame', 'Gold_Chainmail_Ingame', 'Gold_Greaves_Ingame'],
+  [IT.SHADOW_HELM]: ['Shadow_helmet_ingame', 'Shadow_scalemail_ingame', 'Shadow_Greaves_ingame'],
+  // 熔岩套(Molten_Helmet_ingame / Molten_Breastplate_ingame / Molten_Greaves_ingame):
+  // constants.ts 尚无熔岩盔甲物品 id, 待后续版本接入后在此补一行
+};
+
+/** 盔甲三槽 → 原版 ingame 素材名(无映射槽位 = null 跳过该件, 不影响其余槽位) */
+function armorImgsOf(
+  armor: { head: Slot | null; body: Slot | null; legs: Slot | null } | null | undefined,
+): { head: string | null; body: string | null; legs: string | null } | null {
+  if (!armor || (!armor.head && !armor.body && !armor.legs)) return null;
+  const pick = (s: Slot | null, idx: 0 | 1 | 2): string | null => {
+    if (!s) return null;
+    const as = ItemDefs[s.id]?.armorSlot;
+    const off = as === 'head' ? 0 : as === 'body' ? 1 : as === 'legs' ? 2 : idx;
+    return ARMOR_IMG[s.id - off]?.[off] ?? null;
+  };
+  return { head: pick(armor.head, 0), body: pick(armor.body, 1), legs: pick(armor.legs, 2) };
+}
+
+/** 玩家原版帧号(参考站编号): 0 站立 / 1-4 挥击 / 5 跳跃 / 6-18 走路 13 帧(周期 2π 与程序化同步) */
+function playerImgFrame(p: {
+  swing: { t: number; dur: number } | null;
+  onGround: boolean; vx: number; walkT: number;
+}): number {
+  if (p.swing) return 1 + Math.min(3, Math.floor((p.swing.t / p.swing.dur) * 4));
+  if (!p.onGround) return 5;
+  if (Math.abs(p.vx) > 0.3) {
+    return 6 + (((Math.round(p.walkT / ((Math.PI * 2) / 13)) % 13) + 13) % 13);
+  }
+  return 0;
+}
+
+/** 整树精灵条目(视口内树基扫描结果) */
+interface TreeEntry { x: number; baseY: number; heightTiles: number; variant: number }
+
+/** 该 TRUNK 格属于某棵已扫描树(同列且在树干范围内) → 瓦片循环跳过程序化绘制 */
+function trunkInTree(trees: TreeEntry[], x: number, y: number): boolean {
+  for (let i = 0; i < trees.length; i++) {
+    const t = trees[i];
+    if (t.x === x && y <= t.baseY && y > t.baseY - t.heightTiles) return true;
+  }
+  return false;
+}
+
+/** 该 LEAF 格落在某棵树冠包围盒内(±5 列; 树冠最多探出树干顶 5 行 / 树基下 1 行) */
+function leafInTree(trees: TreeEntry[], x: number, y: number): boolean {
+  for (let i = 0; i < trees.length; i++) {
+    const t = trees[i];
+    if (x >= t.x - 5 && x <= t.x + 5 && y <= t.baseY + 1 && y >= t.baseY - t.heightTiles - 7) return true;
+  }
+  return false;
+}
+
+/** 树基旁草类型 → 整树色调(优先级: 雪 > 丛林 > 腐化; 邻格 = 树基 ±1 列 / 基行与下一行) */
+const TREE_TINTS: readonly (readonly [readonly number[], string])[] = [
+  [[T.SNOW], 'snow'],
+  [[T.JUNGLE_GRASS, T.MUD], 'jungle'],
+  [[T.CORRUPT_GRASS, T.CORRUPT_STONE], 'corrupt'],
+];
+function treeTintAt(wld: World, x: number, baseY: number): string | null {
+  for (const [ids, name] of TREE_TINTS) {
+    if (ids.indexOf(wld.get(x - 1, baseY + 1)) >= 0 || ids.indexOf(wld.get(x + 1, baseY + 1)) >= 0
+      || ids.indexOf(wld.get(x - 1, baseY)) >= 0 || ids.indexOf(wld.get(x + 1, baseY)) >= 0) return name;
+  }
+  return null;
 }
 
 /** 圆角矩形路径(手绘 arcTo, 不依赖 ctx.roundRect) */
@@ -150,6 +250,9 @@ function drawTileEdges(
 
 /** 贴图内已烘焙 rgba(0,0,0,0.42) 墙体暗化(textures.wallFrom), 此处只补墙-空气交界的深色描边 */
 const WALL_EDGE = 'rgba(0,0,0,0.30)';
+
+/** 原版墙贴图(dirt_wall_tileset)是未暗化原图, 绘制后叠 0.45 黑(参考站取值, 比程序化烘焙 0.42 略深) */
+const WALL_DIM = 'rgba(0,0,0,0.45)';
 
 // ==================== 10-c C: 深度分层背景 (程序化, 预生成一次) ====================
 
@@ -324,12 +427,74 @@ function drawDepthBackdrop(g: GameEngine, ctx: CanvasRenderingContext2D, wld: Wo
   }
 }
 
+// ==================== 12-b: 原版分层背景图(屏幕空间) ====================
+
+/**
+ * 原版背景系统(素材就绪时替代 drawForestBackdrop + drawDepthBackdrop):
+ * 按玩家深度选层 —— 地表(森林双图按相机 x 交替 / 腐化群系用 bg_corruption_1) → 地下 → 洞穴 →
+ * 熔岩 → 地狱; 整屏铺满(背景图自带天空), 0.5 视差横向平铺; 地下层叠 0.15→0.5 深度暗化(越深越暗)。
+ * 层界锚定: 参考站阈值(y<15%/30%/50%/70% 世界高)按其地表位置标定; 我方地表在 ~0.28h
+ * (world.ts baseSurf = min(96, h*0.283)), 故改用"玩家列地表线 + hellY"锚定, 语义等价
+ * (地表=森林 / 地狱起点=underworld)。
+ */
+function drawImgBackdrop(g: GameEngine, ctx: CanvasRenderingContext2D, W: number, H: number, A: Assets, wld: World): void {
+  const p = g.player;
+  const pgx = clamp(Math.floor(p.x / 16), 0, wld.w - 1);
+  const ty = (p.y - p.h / 2) / 16;                 // 玩家中心所在格 y
+  const surf = wld.surface[pgx];
+  const span = Math.max(60, wld.hellY - surf);     // 地表→地狱 跨度(格)
+  let name: string;
+  let deep = false;                                // 森林层不叠暗化
+  if (ty < surf + 6) {
+    if (wld.biomeAt(pgx) === BIOME.CORRUPTION) {
+      name = 'bg_corruption_1';
+    } else {
+      const camTX = (g.camX + g.viewW() / 2) / 16; // 相机中心格 x, 每 100 格交替双图
+      name = Math.floor(camTX / 100) % 2 === 0 ? 'bg_forest_1' : 'bg_forest_2';
+    }
+  } else if (ty < surf + span * 0.28) {
+    name = 'bg_underground_2'; deep = true;
+  } else if (ty < surf + span * 0.58) {
+    name = 'bg_cavern_4'; deep = true;
+  } else if (ty < wld.hellY) {
+    name = 'bg_lava_4'; deep = true;
+  } else {
+    name = 'bg_underworld_2'; deep = true;
+  }
+  const img = A.img(name);
+  if (!img) return;                                // 单图缺失: 保留天空, 不画背景
+  // 未加载完成的 HTMLImageElement naturalWidth=0 → 跳过(不产生 Infinity 缩放)
+  const iw = 'naturalWidth' in img ? img.naturalWidth : img.width;
+  const ih = 'naturalHeight' in img ? img.naturalHeight : img.height;
+  if (!(iw > 0) || !(ih > 0)) return;
+  const scale = H / ih;                            // 高度铺满视口(屏幕像素)
+  const w = iw * scale;
+  const par = (g.camX * g.zoom * 0.5) % w;         // 0.5 视差(世界移动速率的一半, 折算屏幕像素)
+  ctx.imageSmoothingEnabled = true;                // 背景图大幅放大, 保持平滑(参考站观感)
+  for (let sx = -par; sx < W; sx += w) ctx.drawImage(img, sx, 0, w, H);
+  if (deep) {
+    const d01 = clamp((ty - surf - 6) / (wld.hellY - surf), 0, 1);
+    ctx.fillStyle = `rgba(0,0,0,${(0.15 + 0.35 * d01).toFixed(3)})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+  ctx.imageSmoothingEnabled = false;
+}
+
 export function renderGame(g: GameEngine): void {
   if (!g.world || !g.player) return;
   const ctx = g.ctx;
   const W = g.vw, H = g.vh;
   const playing = g.screen === 'playing';
   const showPlayer = playing && !g.player.dead;
+
+  // ---- 12-b: 原版素材就绪状态(未就绪 → 触发幂等加载, 全部走程序化回退) ----
+  const A = getAssets();
+  const useAssets = A.ready;
+  if (!useAssets) loadAssets();
+  else if (!itemIconsApplied) {
+    applyItemIcons(g.tex);      // 用原版 PNG 覆盖物品图标/挥舞锚点(仅首次就绪时一次)
+    itemIconsApplied = true;
+  }
 
   // ---- 天空(屏幕空间) ----
   g.sky.dayT = g.dayT();
@@ -340,8 +505,9 @@ export function renderGame(g: GameEngine): void {
   g.sky.timeSec = g.timeSec;
   ctx.setTransform(g.dpr, 0, 0, g.dpr, 0, 0);
   drawSkyBackground(ctx, W, H, g.sky);
-  // ---- 地表树林剪影(屏幕空间, 山峦之上/地形之下) ----
-  drawForestBackdrop(g, ctx, W, H);
+  // ---- 背景(屏幕空间, 天空之后瓦片之前): 原版分层背景图 / 程序化树林剪影 ----
+  if (useAssets) drawImgBackdrop(g, ctx, W, H, A, g.world);
+  else drawForestBackdrop(g, ctx, W, H);
 
   // ---- 世界空间 ----
   ctx.save();
@@ -363,22 +529,30 @@ export function renderGame(g: GameEngine): void {
   // ---- 全屏地图迷雾缓存增量维护(世界变更时全量重建一次, 平时仅坐标比较) ----
   updateFog(g);
 
-  // ---- 背景墙 (贴图已烘焙 0.42 暗化) + 墙缘暗边(与无墙空气交界 2px, 洞穴纵深) ----
+  // ---- 背景墙 (程序化: 贴图已烘焙 0.42 暗化 / 原版: dirt_wall 未暗化原图 + 0.45 叠暗)
+  //      + 墙缘暗边(与无墙空气交界 2px, 洞穴纵深) ----
+  const dirtWallImg = useAssets ? A.img('dirt_wall_tileset') : null;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const id = wld.tiles[y * wld.w + x];
       if (TileDefs[id].solid) continue;
       const wall = wld.walls[y * wld.w + x];
       if (!wall) continue;
-      const arr = tex.walls.get(wall);
-      if (arr) ctx.drawImage(arr[(x * 7 + y * 11) % arr.length], x * 16, y * 16);
+      const px = x * 16, py = y * 16;
+      if (wall === W_DIRT && dirtWallImg) {
+        ctx.drawImage(dirtWallImg, 0, 0, 16, 16, px, py, 16, 16);
+        ctx.fillStyle = WALL_DIM;                       // 原版墙图未烘焙暗化, 叠 0.45(参考站值)
+        ctx.fillRect(px, py, 16, 16);
+      } else {
+        const arr = tex.walls.get(wall);
+        if (arr) ctx.drawImage(arr[(x * 7 + y * 11) % arr.length], px, py);
+      }
       // 墙缘: 邻格无墙且邻格非实心方块(实心方块会盖住描边) → 该侧 2px 深色
       const wU = !wld.getWall(x, y - 1) && !TileDefs[wld.get(x, y - 1)].solid;
       const wD = !wld.getWall(x, y + 1) && !TileDefs[wld.get(x, y + 1)].solid;
       const wL = !wld.getWall(x - 1, y) && !TileDefs[wld.get(x - 1, y)].solid;
       const wR = !wld.getWall(x + 1, y) && !TileDefs[wld.get(x + 1, y)].solid;
       if (wU || wD || wL || wR) {
-        const px = x * 16, py = y * 16;
         ctx.fillStyle = WALL_EDGE;
         if (wU) ctx.fillRect(px, py, 16, 2);
         if (wD) ctx.fillRect(px, py + 14, 16, 2);
@@ -388,18 +562,90 @@ export function renderGame(g: GameEngine): void {
     }
   }
 
-  // ---- 深度分层背景(墙之上/方块之下): 土层暗化 / 石层大石斑 / 地狱暗红+岩浆光晕 ----
-  drawDepthBackdrop(g, ctx, wld);
+  // ---- 深度分层背景(墙之上/方块之下; 原版素材时已由屏幕空间背景图替代) ----
+  if (!useAssets) drawDepthBackdrop(g, ctx, wld);
 
   // ---- 瓦片 ----
   const glows: { c: HTMLCanvasElement; x: number; y: number; s: number }[] = [];
   const roots: { c: HTMLCanvasElement; x: number; y: number }[] = [];
   const flameFrame = (g.frame >> 3) & 3;
+
+  // ---- 12-b: 整树精灵扫描(原版素材) ----
+  // 树基 = TRUNK 列最底格(下方实心或草); 基准行向下多扫 24 行: 视口下缘以下的树,
+  // 其树干/树冠仍可能探入视口(树最高约 16 干 + 7 行冠); 左右多扫 6 列盖住冠幅溢出。
+  // 瓦片循环里 TRUNK/LEAF* 命中已扫描树则跳过, 循环后统一画整树精灵。
+  const treeImg = useAssets ? A.img('tree_example') : null;
+  const trees: TreeEntry[] = [];
+  if (treeImg) {
+    const scanBottom = Math.min(wld.h - 1, y1 + 24);
+    const scanL = Math.max(0, x0 - 6), scanR = Math.min(wld.w - 1, x1 + 6);
+    for (let x = scanL; x <= scanR; x++) {
+      for (let y = y0; y <= scanBottom; y++) {
+        if (wld.tiles[y * wld.w + x] !== T.TRUNK) continue;
+        if (wld.get(x, y + 1) === T.TRUNK) continue;   // 非树干段底 → 跳过
+        const below = wld.get(x, y + 1);
+        if (!TileDefs[below].solid && below !== T.GRASS && below !== T.JUNGLE_GRASS && below !== T.CORRUPT_GRASS) continue; // 浮空干: 无树基
+        let heightTiles = 1;
+        while (heightTiles < 64 && wld.get(x, y - heightTiles) === T.TRUNK) heightTiles++;
+        trees.push({ x, baseY: y, heightTiles, variant: cellHash(x, y) });
+      }
+    }
+    trees.sort((a, b) => a.x - b.x);                   // 按 x 排序绘制(参考站顺序)
+  }
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
       const id = wld.tiles[y * wld.w + x];
       if (id === T.AIR) continue;
       const px = x * 16, py = y * 16;
+
+      if (useAssets) {
+        // ---- 12-b: 原版贴图瓦片(TILE_SHEET 映射): 邻接同族选帧, 不再程序化绘制/描边(贴图自带边缘) ----
+        const conf = TILE_SHEET[id];
+        if (conf) {
+          const sheet = A.img(conf.name);
+          if (sheet) {
+            const fam = tileFamily(id);
+            const fr = frameFor(
+              tileFamily(wld.get(x, y - 1)) === fam,
+              tileFamily(wld.get(x + 1, y)) === fam,
+              tileFamily(wld.get(x, y + 1)) === fam,
+              tileFamily(wld.get(x - 1, y)) === fam,
+              conf.table, conf.step,
+            );
+            if (fr.flipY) {
+              // 上同下不同时帧上下互换 + 垂直翻转(参考站 rN 规则)
+              ctx.save();
+              ctx.translate(px + 8, py + 8);
+              ctx.scale(1, -1);
+              ctx.translate(-8, -8);
+              ctx.drawImage(sheet, fr.sx, 0, 16, 16, 0, 0, 16, 16);
+              ctx.restore();
+            } else {
+              ctx.drawImage(sheet, fr.sx, 0, 16, 16, px, py, 16, 16);
+            }
+            if (id === T.HELLSTONE) {
+              // 狱岩: 贴图路径保留余烬闪烁 + 红光
+              const h = cellHash(x, y);
+              if (h % 100 < 6) {
+                const tw = 0.5 + 0.5 * Math.sin(g.timeSec * 3 + x);
+                ctx.fillStyle = `rgba(255,150,60,${(0.3 + 0.6 * tw).toFixed(2)})`;
+                ctx.fillRect(px + ((h >>> 7) % 14) + 1, py + ((h >>> 11) % 14) + 1, 1, 1);
+              }
+              if (h % 8 === 0) glows.push({ c: tex.glowRed, x: px + 8, y: py + 8, s: 60 });
+            }
+            continue;
+          }
+        }
+        // ---- 12-b: 整树精灵: TRUNK/LEAF* 属于已扫描树则跳过逐格绘制(循环后画整树);
+        //      浮空干 / 孤立树冠回退程序化 ----
+        if (treeImg) {
+          if (id === T.TRUNK) {
+            if (trunkInTree(trees, x, y)) continue;
+          } else if (id === T.LEAF || id === T.LEAF_SNOW || id === T.LEAF_JUNGLE || id === T.LEAF_CORRUPT) {
+            if (leafInTree(trees, x, y)) continue;
+          }
+        }
+      }
 
       if (id === T.GRASS) {
         const arr = tex.tiles.get(T.DIRT)!;
@@ -441,24 +687,54 @@ export function renderGame(g: GameEngine): void {
         }
         continue;
       }
-      if (id === T.WORKBENCH_L) { ctx.drawImage(tex.sprites.workbench, px, py); continue; }
-      if (id === T.ANVIL_L) { ctx.drawImage(tex.sprites.anvil, px, py); continue; }
+      if (id === T.WORKBENCH_L) {
+        const im = useAssets ? A.img('Work_Bench') : null;
+        if (im) ctx.drawImage(im, px, py - 2);            // 原版 32x18, 底对齐 2x1 格
+        else ctx.drawImage(tex.sprites.workbench, px, py);
+        continue;
+      }
+      if (id === T.ANVIL_L) {
+        const im = useAssets ? A.img('Iron_Anvil_placed') : null;
+        if (im) ctx.drawImage(im, px, py - 2);            // 原版 32x18, 底对齐格顶
+        else ctx.drawImage(tex.sprites.anvil, px, py);
+        continue;
+      }
       if (id === T.FURNACE_TL) {
-        ctx.drawImage(tex.sprites.furnace, px, py);
+        const im = useAssets ? A.img('Furnace_placed') : null;
+        if (im) ctx.drawImage(im, px - 7, py - 2);        // 原版 46x34, 2x2 格水平居中(每侧溢出 7px), 底对齐
+        else ctx.drawImage(tex.sprites.furnace, px, py);
         glows.push({ c: tex.glowWarm, x: px + 16, y: py + 18, s: 220 });
         continue;
       }
       // ---- 9-f: 新家具主格(整图绘制, 覆盖多格) ----
-      if (id === T.DOOR_C_T) { ctx.drawImage(tex.sprites.doorC, px, py); continue; }
-      if (id === T.DOOR_O_T) { ctx.drawImage(tex.sprites.doorO, px, py); continue; }
+      if (id === T.DOOR_C_T) {
+        const im = useAssets ? A.img('Wooden_door_closed') : null;
+        // 原版门 3 格高(16x48), 我方门占 2 格(DOOR_C_T/B) → 纵向压缩画 16x32
+        if (im) ctx.drawImage(im, 0, 0, 16, 48, px, py, 16, 32);
+        else ctx.drawImage(tex.sprites.doorC, px, py);
+        continue;
+      }
+      if (id === T.DOOR_O_T) {
+        // 开门门板贴左(默认); 左邻实心且右侧空时贴右, 避免门板埋进墙里
+        const rightSide = useAssets && wld.isSolid(x - 1, y) && !wld.isSolid(x + 1, y);
+        const im = useAssets ? A.img(rightSide ? 'Wooden_door_open_right' : 'Wooden_door_open_left') : null;
+        if (im) ctx.drawImage(im, 0, 0, 6, 48, rightSide ? px + 10 : px, py, 6, 32);
+        else ctx.drawImage(tex.sprites.doorO, px, py);
+        continue;
+      }
       if (id === T.CHEST_TL) {
-        ctx.drawImage(tex.sprites.chest, px, py);
+        const im = useAssets ? A.img('Chest') : null;
+        if (im) ctx.drawImage(im, px, py + 4);            // 原版 32x28, 底对齐 2x2 格
+        else ctx.drawImage(tex.sprites.chest, px, py);
         // 已开启的宝箱: 箱体上方金色微光
         if (g.chestOpen === y * wld.w + x) glows.push({ c: tex.glowWarm, x: px + 16, y: py + 5, s: 120 });
         continue;
       }
       if (id === T.ALTAR_TL) {
-        ctx.drawImage(tex.sprites.altar, px, py);
+        const im = useAssets ? A.img('Demon_Altar') : null;
+        // 原版 48x34; 我方祭坛 FURNITURE_SHAPE 实际 2x2 格(非 3x2) → 32px 组宽水平居中 x=px-8, 底对齐 y=py-2
+        if (im) ctx.drawImage(im, px - 8, py - 2);
+        else ctx.drawImage(tex.sprites.altar, px, py);
         glows.push({ c: tex.glowRed, x: px + 16, y: py + 14, s: 150 });
         // 祭坛上方 3 个红色浮动符文点(sin 浮动)
         ctx.fillStyle = 'rgba(255,70,70,0.9)';
@@ -470,7 +746,12 @@ export function renderGame(g: GameEngine): void {
         continue;
       }
       if (id === T.TABLE_L) { ctx.drawImage(tex.sprites.table, px, py); continue; }
-      if (id === T.CHAIR) { ctx.drawImage(tex.sprites.chair, px, py); continue; }
+      if (id === T.CHAIR) {
+        const im = useAssets ? A.img('Wooden_Chair') : null;
+        if (im) ctx.drawImage(im, px, py - 16);           // 原版 16x32, 椅背向上溢出 1 格
+        else ctx.drawImage(tex.sprites.chair, px, py);
+        continue;
+      }
       // ---- 家具子格跳过(主格整图已覆盖): 旧 21-25 + 门底/宝箱/祭坛/桌右 ----
       if (
         (id > T.FURNACE_TL && id <= T.ANVIL_R)
@@ -521,9 +802,14 @@ export function renderGame(g: GameEngine): void {
         continue;
       }
       if (id === T.TORCH) {
-        const arr = tex.tiles.get(T.TORCH)!;
-        ctx.drawImage(arr[0], px, py);
-        ctx.drawImage(tex.flames[flameFrame], px + 4, py - 5);
+        // 原版火把(含火焰动画): 下方实心 = 地面火把, 否则墙火把(右侧实心时镜像)
+        const drew = useAssets
+          && drawImgTorch(ctx, px, py, wld.isSolid(x, y + 1), wld.isSolid(x + 1, y), performance.now());
+        if (!drew) {
+          const arr = tex.tiles.get(T.TORCH)!;
+          ctx.drawImage(arr[0], px, py);
+          ctx.drawImage(tex.flames[flameFrame], px + 4, py - 5);
+        }
         glows.push({ c: tex.glowWarm, x: px + 8, y: py + 2, s: 150 });
         continue;
       }
@@ -549,10 +835,43 @@ export function renderGame(g: GameEngine): void {
         continue;
       }
       if (id === T.LIFE_CRYSTAL) {
-        // 粉水晶两帧脉动(暖粉光晕)
-        ctx.drawImage(tex.crystalFrames[(g.frame >> 4) & 1], px, py);
+        // 原版生命水晶: 5 帧 32x32, 中心对齐格子(px-8, py-8, 跨 1.5 格)
+        const im = useAssets ? A.img('Life_Crystal_ingame') : null;
+        if (im) {
+          const fr = Math.floor(performance.now() / 330) % 5;
+          ctx.drawImage(im, fr * 32, 0, 32, 32, px - 8, py - 8, 32, 32);
+        } else {
+          // 粉水晶两帧脉动(暖粉光晕)
+          ctx.drawImage(tex.crystalFrames[(g.frame >> 4) & 1], px, py);
+        }
         glows.push({ c: tex.glowRed, x: px + 8, y: py + 8, s: 140 });
         continue;
+      }
+      // ---- 12-b: 平台/树苗/高草(原版 PNG, 未就绪回退程序化通用路径) ----
+      if (useAssets && id === T.PLATFORM) {
+        const im = A.img('Wood_Platform');
+        if (im) {
+          // 顶对齐格顶(单向平台碰撞落点 = 格顶, moveBody b.y=ty*16); 宽 16 等比缩放(原图 24x14 → 高 9)
+          const iw = 'naturalWidth' in im ? im.naturalWidth : im.width;
+          const ih = 'naturalHeight' in im ? im.naturalHeight : im.height;
+          if (iw > 0 && ih > 0) {
+            ctx.drawImage(im, px, py, 16, Math.max(5, Math.round((16 * ih) / iw)));
+            continue;
+          }
+        }
+      }
+      if (useAssets && id === T.SAPLING) {
+        const im = A.img('Sapling');
+        if (im) { ctx.drawImage(im, px + 1.5, py - 16, 13, 32); continue; }  // 原版 14x34 → 13x32(贴树基比例)
+      }
+      if (useAssets && id === T.TGRASS) {
+        // 原版高草 24px 随风摆(丛林泥/丛林草上用绿色叠加变体)
+        const below = wld.get(x, y + 1);
+        if (drawTallGrass(
+          ctx, px, py, cellHash(x, y) % 6,
+          below === T.JUNGLE_GRASS || below === T.MUD ? 'jungle' : 'grass',
+          g.timeSec * 1000, x * 7 + y * 11,
+        )) continue;
       }
       // 通用路径: SAND/SNOW/ICE/MUD/JUNGLE_GRASS/CORRUPT_GRASS/CORRUPT_STONE/ASH/OBSIDIAN/
       //          MUSH_STEM/CACTUS/SAPLING/VINE/LEAF_SNOW/LEAF_JUNGLE/LEAF_CORRUPT 等自包含贴图
@@ -564,8 +883,18 @@ export function renderGame(g: GameEngine): void {
     }
   }
 
-  // ---- 树根覆盖层 ----
+  // ---- 树根覆盖层(程序化路径; 整树精灵时 TRUNK 被跳过, roots 恒为空) ----
   for (const rt of roots) ctx.drawImage(rt.c, rt.x, rt.y);
+
+  // ---- 12-b: 整树精灵(原版 tree_example, 替代逐格 TRUNK/LEAF; 已按 x 排序) ----
+  // drawTreeSprite 契约(assets.ts): baseX/baseY = 树基格世界px(树底对齐树基格底,
+  // 内部 dy=baseY+16-h), 故传 (列中心, 树基格顶 y); variant 奇数水平翻转
+  if (treeImg) {
+    for (let i = 0; i < trees.length; i++) {
+      const t = trees[i];
+      drawTreeSprite(ctx, t.x * 16 + 8, t.baseY * 16, t.heightTiles, t.variant, treeTintAt(wld, t.x, t.baseY), 0);
+    }
+  }
 
   // ---- 挖掘裂纹 ----
   if (g.mineDamage.size > 0) {
@@ -588,44 +917,72 @@ export function renderGame(g: GameEngine): void {
     ctx.drawImage(icon, d.x - 8, d.y - 9 + bob);
   }
 
-  // ---- 敌怪 ----
+  // ---- 敌怪(原版素材优先, 未就绪/无映射回退程序化) ----
   for (const e of g.enemies) {
     const flash = e.flash > 0;
     if (e.kind === 'gslime' || e.kind === 'bslime') {
+      if (useAssets
+        && drawImgSlime(
+          ctx, e.kind === 'gslime' ? 'green' : 'blue',
+          e.x + IMG_OFF.slime[0], e.y + IMG_OFF.slime[1], e.anim * 0.06, e.dir, flash, performance.now(),
+        )) continue;
       const squish = e.onGround
         ? (Math.abs(e.vx) > 0.3 ? 0.22 : 0.1 + 0.08 * Math.sin(e.anim * 0.08))
         : (e.vy < 0 ? -0.28 : 0.34);
       drawSlime(ctx, e.kind === 'gslime' ? SLIME_GREEN : SLIME_BLUE, e.x, e.y, e.w, e.h, squish, e.dir, flash);
     } else if (e.kind === 'zombie') {
+      if (useAssets
+        && drawImgZombie(ctx, e.x + IMG_OFF.humanoid[0], e.y + IMG_OFF.humanoid[1], e.anim * 0.13, e.dir, flash)) continue;
       drawHumanoid(ctx, ZOMBIE_PALETTE, {
         x: e.x, y: e.y, dir: e.dir, walkT: e.anim * 0.13, onGround: e.onGround, vy: e.vy,
         zombieArms: true, flash,
       });
     } else if (e.kind === 'eye') {
+      if (useAssets
+        && drawImgEye(ctx, e.x + IMG_OFF.eye[0], e.y + IMG_OFF.eye[1], e.anim * 0.1, e.dir, flash)) continue;
       drawEye(ctx, e.x, e.y, e.w, e.h, e.anim, e.dir, flash);
     } else if (e.kind === 'bat') {
+      if (useAssets
+        && drawImgBat(ctx, e.x + IMG_OFF.bat[0], e.y + IMG_OFF.bat[1], e.anim * 0.15, e.dir, flash)) continue;
       drawBat(ctx, e.x, e.y, e.w, e.h, e.anim, e.dir, flash);
     } else if (e.kind === 'skel') {
+      if (useAssets
+        && drawImgSkeleton(ctx, e.x + IMG_OFF.humanoid[0], e.y + IMG_OFF.humanoid[1], e.anim * 0.13, e.dir, flash)) continue;
       drawHumanoid(ctx, SKELETON_PALETTE, {
         x: e.x, y: e.y, dir: e.dir, walkT: e.anim * 0.13, onGround: e.onGround, vy: e.vy,
         zombieArms: true, flash,
       });
     } else if (e.kind === 'lslime') {
-      const squish = e.onGround
-        ? (Math.abs(e.vx) > 0.3 ? 0.22 : 0.1 + 0.08 * Math.sin(e.anim * 0.08))
-        : (e.vy < 0 ? -0.28 : 0.34);
-      drawSlime(ctx, LAVA_SLIME, e.x, e.y, e.w, e.h, squish, e.dir, flash);
+      let drew = false;
+      if (useAssets) {
+        drew = drawImgSlime(
+          ctx, 'lava', e.x + IMG_OFF.slime[0], e.y + IMG_OFF.slime[1], e.anim * 0.06, e.dir, flash, performance.now(),
+        );
+      }
+      if (!drew) {
+        const squish = e.onGround
+          ? (Math.abs(e.vx) > 0.3 ? 0.22 : 0.1 + 0.08 * Math.sin(e.anim * 0.08))
+          : (e.vy < 0 ? -0.28 : 0.34);
+        drawSlime(ctx, LAVA_SLIME, e.x, e.y, e.w, e.h, squish, e.dir, flash);
+      }
       // 熔岩史莱姆自带红光(仅屏内计入, 避免挤占光晕上限)
       if (e.x > g.camX - 32 && e.x < g.camX + g.viewW() + 32 && e.y > g.camY - 32 && e.y < g.camY + g.viewH() + 32) {
         glows.push({ c: tex.glowRed, x: e.x, y: e.y - e.h / 2, s: 90 });
       }
     } else if (e.kind === 'eos') {
+      if (useAssets
+        && drawImgEos(ctx, e.x + IMG_OFF.eos[0], e.y + IMG_OFF.eos[1], e.anim * 0.1, e.dir, flash)) continue;
       drawEos(ctx, e.x, e.y, e.w, e.h, e.anim, e.dir, flash);
     } else if (e.kind === 'eoc') {
       // 蓄力/旋转前摇: 整体 ±1.5px 随机抖动
       const jitter = e.mode === 'telegraph' || e.mode === 'spin';
       const jx = jitter ? (Math.random() * 2 - 1) * 1.5 : 0;
       const jy = jitter ? (Math.random() * 2 - 1) * 1.5 : 0;
+      if (useAssets && drawImgEoC(
+        ctx, e.x + jx + IMG_OFF.eoc[0], e.y + jy + IMG_OFF.eoc[1], e.phase ?? 0,
+        (g.player.x - e.x) * 0.02, (g.player.y - g.player.h / 2 - e.y) * 0.02,
+        e.mode === 'spin' ? performance.now() / 100 % (Math.PI * 2) : 0, flash,
+      )) continue;
       drawEoC(
         ctx, e.x + jx, e.y + jy, e.w, e.h, e.phase ?? 0,
         (g.player.x - e.x) * 0.06, (g.player.y - g.player.h / 2 - e.y) * 0.06,
@@ -634,12 +991,14 @@ export function renderGame(g: GameEngine): void {
     }
   }
 
-  // ---- 向导 NPC ----
+  // ---- 向导 NPC(原版精灵优先, 名牌/气泡保留) ----
   const gd = g.guide;
   if (gd) {
-    drawHumanoid(ctx, GUIDE_PALETTE, {
-      x: gd.x, y: gd.y, dir: gd.dir, walkT: gd.walkT, onGround: gd.onGround, vy: gd.vy,
-    });
+    if (!useAssets || !drawImgGuide(ctx, gd.x + IMG_OFF.humanoid[0], gd.y + IMG_OFF.humanoid[1], gd.walkT, gd.dir, false)) {
+      drawHumanoid(ctx, GUIDE_PALETTE, {
+        x: gd.x, y: gd.y, dir: gd.dir, walkT: gd.walkT, onGround: gd.onGround, vy: gd.vy,
+      });
+    }
     // 头顶名牌
     ctx.font = '7px ui-monospace, monospace';
     ctx.textAlign = 'center';
@@ -675,7 +1034,7 @@ export function renderGame(g: GameEngine): void {
     }
   }
 
-  // ---- 玩家 ----
+  // ---- 玩家(原版精灵优先; 盔甲三槽按套装映射 ingame 贴图) ----
   if (showPlayer) {
     const p = g.player;
     const blink = p.iframes > 0 && (g.frame % 6) < 3;
@@ -690,10 +1049,34 @@ export function renderGame(g: GameEngine): void {
           anchor: tex.anchors[p.swing.itemId] ?? [8, 8],
         };
       }
-      drawHumanoid(ctx, PLAYER_PALETTE, {
-        x: p.x, y: p.y, dir: p.dir, walkT: p.walkT, onGround: p.onGround, vy: p.vy,
-        swing, flash: false, armor: armorColorsOf(p.armor),
-      });
+      let drew = false;
+      if (useAssets) {
+        // 帧号按参考站编号(0站/1-4挥/5跳/6-18走); heldIcon 传 null,
+        // 挥舞物品由下方手动叠绘(tex.icons 已被 applyItemIcons 换成原版 PNG)
+        drew = drawImgPlayer(
+          ctx, p.x + IMG_OFF.player[0], p.y + IMG_OFF.player[1],
+          playerImgFrame(p), p.dir, p.walkT, p.onGround, p.vy,
+          p.swing ? p.swing.t / p.swing.dur : 0,
+          armorImgsOf(p.armor), null, false,
+        );
+        if (drew && p.swing) {
+          const icon = tex.icons[p.swing.itemId];
+          if (icon) {
+            const ease2 = 1 - Math.pow(1 - p.swing.t / p.swing.dur, 2);
+            ctx.save();
+            ctx.translate(p.x + p.dir * 6, p.y - 14);
+            ctx.rotate((-2.05 + ease2 * 2.9) * p.dir);
+            ctx.drawImage(icon, -7, -7, 14, 14);
+            ctx.restore();
+          }
+        }
+      }
+      if (!drew) {
+        drawHumanoid(ctx, PLAYER_PALETTE, {
+          x: p.x, y: p.y, dir: p.dir, walkT: p.walkT, onGround: p.onGround, vy: p.vy,
+          swing, flash: false, armor: armorColorsOf(p.armor),
+        });
+      }
     }
   }
 
@@ -705,12 +1088,24 @@ export function renderGame(g: GameEngine): void {
   }
   ctx.globalAlpha = 1;
 
-  // ---- 投射物(粒子层后): 箭(含插墙) / 炸弹 + 引信火花 ----
+  // ---- 投射物(粒子层后): 箭(含插墙) / 炸弹 + 引信火花(原版 PNG 优先) ----
   for (const pr of g.projs) {
     if (pr.kind === 'arrow') {
-      drawArrow(ctx, pr.x, pr.y, pr.rot);
+      const im = useAssets ? A.img('Wooden_Arrow') : null;
+      if (im) {
+        // 原版箭矢(14x32 图): 旋转后画 10x20 居中
+        ctx.save();
+        ctx.translate(pr.x, pr.y);
+        ctx.rotate(pr.rot + Math.PI / 2);
+        ctx.drawImage(im, -5, -10, 10, 20);
+        ctx.restore();
+      } else {
+        drawArrow(ctx, pr.x, pr.y, pr.rot);
+      }
     } else {
-      drawBomb(ctx, pr.x, pr.y, pr.t);
+      const im = useAssets ? A.img('Bomb') : null;
+      if (im) ctx.drawImage(im, pr.x - 8, pr.y - 8, 16, 16);   // 原版炸弹(22x30 图)居中画 16x16
+      else drawBomb(ctx, pr.x, pr.y, pr.t);
       // 引信火花: 每 6 帧一颗橙色 1px 上飘(纯渲染效果, 不改游戏状态)
       const sf = (g.frame % 6) / 6;
       ctx.globalAlpha = 1 - sf;

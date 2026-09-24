@@ -26,7 +26,7 @@ export default function GameCanvas() {
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 block h-full w-full cursor-crosshair"
+      className="absolute inset-0 block h-full w-full cursor-crosshair touch-none"
       aria-label="泰拉瑞亚游戏画面"
     />
   )

@@ -120,3 +120,19 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ---- 移动端适配(12-c) ---- */
+/* 游戏为全屏 fixed 画布: 禁掉下拉刷新/回弹滚动与 Android 点按灰色高亮 */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 触屏世界交互层(TouchControls): 主指针为鼠标(细指针)的设备上整个禁用,
+   让鼠标/滚轮/右键事件直达画布走引擎原生处理; 手机/平板(粗指针)正常捕获触摸 */
+@media (pointer: fine) {
+  .tc-world {
+    pointer-events: none;
+  }
+}

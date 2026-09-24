@@ -151,6 +151,8 @@ export class GameEngine {
   invOpen = false;
   mineDamage = new Map<number, number>();
   mouse = { x: 0, y: 0, left: false, right: false };
+  /** 触屏输入(TouchControls 写入, 12-c): mx/my ∈ [-1,1] 摇杆向量(死区后), jump=按住跳跃(等同按住空格), mine=世界触摸按住(等同鼠标左键), active=任一触控件激活(信息性) */
+  touch = { active: false, mx: 0, my: 0, jump: false, mine: false };
   sky: SkyState = { dayT: TITLE_DAY_T, skyLight: 1, camX: 0, camY: 0, depthPx: 0, timeSec: 0 };
   redFlash = 0;
   shake = 0;                // 屏幕震动强度(世界像素,渲染 zoom=2)
@@ -237,6 +239,8 @@ export class GameEngine {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
     window.addEventListener('beforeunload', this.onUnload);
+    // 移动端地址栏收放/旋转屏跟随(12-c): visualViewport 的 resize 比 layout 尺寸变化更及时
+    window.visualViewport?.addEventListener('resize', this.onVVResize);
 
     // 生成世界 -> 标题屏
     ui.set({ loading: true, loadingText: '正在生成世界…' });
@@ -263,17 +267,32 @@ export class GameEngine {
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
     window.removeEventListener('beforeunload', this.onUnload);
+    window.visualViewport?.removeEventListener('resize', this.onVVResize);
   }
 
   private resize(): void {
     const rect = this.canvas.getBoundingClientRect();
     this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.vw = Math.max(320, Math.round(rect.width));
-    this.vh = Math.max(240, Math.round(rect.height));
+    const vw = Math.max(320, Math.round(rect.width));
+    const vh = Math.max(240, Math.round(rect.height));
+    const p = this.player;
+    // 视口尺寸变化超过 1px(旋转屏/地址栏收放)时需要相机立即回中(12-c)
+    const moved = !!p && !!this.world && (Math.abs(vw - this.vw) > 1 || Math.abs(vh - this.vh) > 1);
+    this.vw = vw;
+    this.vh = vh;
     this.canvas.width = Math.round(this.vw * this.dpr);
     this.canvas.height = Math.round(this.vh * this.dpr);
     this.ctx.imageSmoothingEnabled = false;
+    // 相机立即对准玩家(followCam 目标位), 防止视口变化后玩家跑出画面
+    if (moved && p) {
+      this.camX = p.x - this.viewW() / 2;
+      this.camY = p.y - this.viewH() * 0.62;
+      this.clampCam();
+    }
   }
+
+  /** visualViewport resize 入口(12-c) */
+  private onVVResize = (): void => { this.resize(); };
 
   // ==================== 世界创建 ====================
 
@@ -435,6 +454,27 @@ export class GameEngine {
     this.mouse.x = e.clientX - r.left;
     this.mouse.y = e.clientY - r.top;
   };
+
+  /**
+   * 触屏世界交互入口(TouchControls 转发, 12-c):
+   * phase='start' 等同鼠标移动+左键按下, 'move' 等同鼠标移动, 'end' 等同左键抬起;
+   * 坐标为画布内 CSS px(与 onMouseMove 同单位: clientX - rect.left)
+   */
+  touchAt(xCss: number, yCss: number, phase: 'start' | 'move' | 'end'): void {
+    this.mouse.x = xCss;
+    this.mouse.y = yCss;
+    if (phase === 'start') {
+      SFX.init();
+      Music.start();
+      this.mouse.left = true;
+      this.touch.active = true;
+      this.touch.mine = true;
+    } else if (phase === 'end') {
+      this.mouse.left = false;
+      this.touch.mine = false;
+      this.touch.active = this.touch.jump;
+    }
+  };
   private onWheel = (e: WheelEvent): void => {
     e.preventDefault();
     if (this.screen !== 'playing' || this.paused) return;
@@ -473,11 +513,15 @@ export class GameEngine {
 
   private moveInput() {
     const canMove = this.screen === 'playing' && !this.paused && !this.mapOpen;
+    // 触屏并集(12-c): 摇杆非零即全速移动(死区 0.15), 摇杆下推 >0.6 触发下平台;
+    // touch.jump 持续为 true 期间等同按住空格(保留"按住跳更高")
+    const tmx = this.touch.mx;
+    const tmy = this.touch.my;
     return {
-      left: canMove && (this.keys.has('KeyA') || this.keys.has('ArrowLeft')),
-      right: canMove && (this.keys.has('KeyD') || this.keys.has('ArrowRight')),
-      jump: canMove && (this.keys.has('Space') || this.keys.has('KeyW') || this.keys.has('ArrowUp')),
-      down: canMove && (this.keys.has('KeyS') || this.keys.has('ArrowDown')),
+      left: canMove && (this.keys.has('KeyA') || this.keys.has('ArrowLeft') || tmx < -0.15),
+      right: canMove && (this.keys.has('KeyD') || this.keys.has('ArrowRight') || tmx > 0.15),
+      jump: canMove && (this.keys.has('Space') || this.keys.has('KeyW') || this.keys.has('ArrowUp') || this.touch.jump),
+      down: canMove && (this.keys.has('KeyS') || this.keys.has('ArrowDown') || tmy > 0.6),
     };
   }
 
@@ -1137,8 +1181,12 @@ export class GameEngine {
     const p = this.player;
     const tx = p.x - this.viewW() / 2;
     const ty = p.y - this.viewH() * 0.62;
-    this.camX += (tx - this.camX) * 0.14;
-    this.camY += (ty - this.camY) * 0.14;
+    // 兜底(12-c): 玩家越出相机中心 0.5 视口范围(旋转屏/地址栏变化/异常传送) → 插值系数取 1 瞬移回中
+    const outX = Math.abs(p.x - (this.camX + this.viewW() / 2)) > this.viewW() * 0.5;
+    const outY = Math.abs(p.y - (this.camY + this.viewH() * 0.62)) > this.viewH() * 0.5;
+    const k = outX || outY ? 1 : 0.14;
+    this.camX += (tx - this.camX) * k;
+    this.camY += (ty - this.camY) * k;
     this.clampCam();
   }
 
