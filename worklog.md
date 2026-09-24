@@ -531,3 +531,19 @@ Work Log:
 Stage Summary:
 - 视觉重构三件套(textures/sprites/render)全部完成并实测通过
 - 剩余: 10-e 单文件版重建 + GitHub 推送
+
+---
+Task ID: 10-e
+Agent: main
+Task: 单文件版重建 + GitHub 推送
+
+Work Log:
+- bun standalone/build.ts → public/terraria.html 357.6KB(引擎共享 src/game/*, 自动带上新视觉三件套)
+- 单文件版浏览器冒烟: 标题屏→进入世界→像素采样验证(泥土/草/玩家肤色新调色板全部在屏)→零 page error
+- git commit 1f5079c "feat: 视觉重构 — 对齐原版泰拉瑞亚观感" (6 文件, +3900/-2290)
+- 推送 https://github.com/43aquarius/web-terraria main 分支成功 (f2a74ed..1f5079c)
+- 提交包含: textures/sprites/render 三件套重写 + ART-SPEC.md 美术规格 + worklog
+
+Stage Summary:
+- 10 系列全部完成: 10-0 规格文档 → 10-a/b/c 并行重写(贴图/精灵/渲染) → 10-d 验证 → 10-e 交付
+- 交付物: Next.js 版(/) + 单文件版(/terraria.html) 双形态同步升级, 视觉对齐参考站标准
