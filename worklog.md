@@ -670,3 +670,17 @@ Work Log:
 
 Stage Summary:
 - 全链路绿: 主版 + 单文件版双形态原版素材渲染, 移动端适配, 挖掘/战斗/光照/群系全部实测通过
+
+---
+Task ID: 12-e
+Agent: main
+Task: 交付收尾 — GitHub 推送
+
+Work Log:
+- 提交 6f2b6e4 "feat: 原版素材重构 — 197 个原版 PNG 全量接入 + 手机端完整适配"(328 文件: assets.ts/render.ts/TouchControls/viewport/单文件版/public/assets 197 PNG/截图)
+- 推送 https://github.com/43aquarius/web-terraria main 成功 (84ee02c..6f2b6e4)
+- dev.log 无异常
+
+Stage Summary:
+- 12 系列全部完成: 12-0 素材获取+逆向 → 12-a/b/c 并行(素材系统/渲染接入/手机端) → 12-d 集成验证 → 12-e 交付
+- 交付物: Next.js 主版(/) + 单文件版(/terraria.html, 1.6MB 内嵌素材) 双形态, 原版素材渲染 + 完整移动端适配
