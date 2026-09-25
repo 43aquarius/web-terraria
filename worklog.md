@@ -684,3 +684,103 @@ Work Log:
 Stage Summary:
 - 12 系列全部完成: 12-0 素材获取+逆向 → 12-a/b/c 并行(素材系统/渲染接入/手机端) → 12-d 集成验证 → 12-e 交付
 - 交付物: Next.js 主版(/) + 单文件版(/terraria.html, 1.6MB 内嵌素材) 双形态, 原版素材渲染 + 完整移动端适配
+
+---
+Task ID: 13-b
+Agent: general-purpose (Overlays 原版化)
+Task: 完全仿照原版 Terraria 1.4 重做 Overlays.tsx(标题屏/世界生成/死亡屏/暂停菜单/帮助/Loading),只改 Overlays.tsx
+
+Work Log:
+- 仅改 src/components/game/Overlays.tsx(369→486 行),全部业务逻辑/useUIState/表单状态/handleSave/handleStartNewWorld/显隐条件/aria/pointer-events 保持原样
+- OVL_CSS 扩充原版组件类: .terraria-font(var(--font-andy)+var(--font-cjk))、.t-stroke(8 向 1px 黑描边)、.t-menu-btn(石质按钮: #3d4355→#2b3040 竖向渐变 + #565e78 边 + inset 高光/暗部 + 圆角 3px,hover #4a5266 提亮,active 下压)、.t-btn-text(奶油→橙渐变字 background-clip:text + drop-shadow 投影,hover 变亮白,disabled 灰)、.t-menu-btn-gold(金边略大)/-sm(小号)、.t-panel(原版蓝 rgba(28,36,74,0.96) + rgba(120,140,220,0.8) 边)、.t-input/.t-radio/.t-close/.t-key(蓝底亮蓝边,选中/聚焦金色)、.t-death(大红字 #e03c3c + 8 向深红 #7a1414 描边 + 黑投影)
+- 渐变字踩坑: color:transparent + text-shadow 会污染渐变 → 改用 filter: drop-shadow(1px 2px 0 rgba(0,0,0,0.55)); lucide 图标 currentColor 会继承 transparent → 声音按钮图标显式 text-[#f0b840]; 嵌套 inline-flex 文字经无头浏览器实测 background-clip:text 正常作用于后代文本
+- 标题屏: 官方 logo(/assets/terraria_logo.png 628x193)mt-[min(12vh,80px)] w-[min(80vw,560px)]; 移除文字标题与副标题; 主菜单 w-72 sm:w-80 竖排(进入世界 gold/继续上次冒险(有存档)/生成新世界/操作指南); 背景暗化 /30→/20; 左下 "Web 复刻版 v0.2"; 右下 "Copyright © Re-Logic — Web 复刻致敬之作" + Github 图标(16px, opacity-70 hover:100, 新标签开 https://github.com/43aquarius/web-terraria); 新增 GitHubLink 内部组件(标题屏图标版/暂停菜单带文字版)
+- 世界生成对话框/帮助弹窗/暂停菜单全部换 .t-panel 原版蓝; 生成对话框标题金色、单选/输入蓝底金选中、按钮石质小号; 暂停菜单布局保留(继续游戏/保存游戏/声音开关/回到标题 + 玩家信息),底部新增分隔线 + GitHub 链接行; 死亡屏文案改 "{playerName} 被杀死了…" + bg-red-950/60→/45; Loading 白字黑描边
+- 验证(agent-browser 无头): DOM+computed style 断言全过——logo 560x172@11.1vh、按钮渐变/金边/3px 圆角/inset 阴影、渐变字 clip=text+transparent+drop-shadow、版本/版权黑描边、GitHub href/target/右下定位、三弹窗面板色值精确匹配、暂停内 GitHub 行、死亡字色/字号/8 向红描边; sharp 像素采样——logo 绿色字形 5265px、石质底 3779px、金按钮字 460px、普通按钮字 859px、死亡红字 14287px、蓝面板 91255px; 移动 375x667 布局不溢出不遮挡; 全程零页面错误
+- 死亡屏测试方法: __game.diePlayer() 直调不触发 syncUI(引擎只在 tickGame 帧尾同步,正常游玩无此问题),补 __game.syncUI(true) 后验证; Loading 态用 50ms 以下 setTimeout 吞掉法冻结后截图
+- tsc --noEmit 零错误、bun run lint 零输出(exit 0); 截图存 agent-ctx/13b_*.png 7 张
+
+Stage Summary:
+- Overlays 六个覆盖层全部原版化: 官方 logo + 石质按钮 + 原版蓝面板 + GitHub 双入口(标题屏右下/暂停菜单底部)
+- 交付物: 修改 src/components/game/Overlays.tsx 一个文件; MenuButton 签名(onClick/children/gold/small)不变; 逻辑零改动
+- 注意: 本任务不含 APK/PR(v1.0.17 清单第 1/4/5 项为 main 编排,版本号在 meson.build 由其他步骤统一)——Overlays 已就绪待集成
+
+---
+Task ID: 13-a
+Agent: general-purpose (HUD 原版化)
+Task: 完全仿照原版 Terraria 1.4 重做游戏内 HUD(src/components/game/HUD.tsx)
+
+Work Log:
+- 重写 HUD.tsx(833→~740 行, 单文件, 未动 Overlays/engine/render/entities/TouchControls):
+  - 左上纵向布局(原版): 快捷栏 10 槽左上锚定(left-1.5/top-1.5), 槽位改原版蓝 rgba(63,82,151,0.80) + 亮蓝边 rgba(120,140,220,0.9) + rounded-[3px]; 选中槽金色边框 #f7d060 + scale-[1.12] + -translate-y-[2px] + z-10 + hud-sel 金色呼吸光; 序号 1-0 白字黑描边
+  - 选中物品名显示在快捷栏右侧(min-[720px] 以上, 避开小屏 256px 小地图), 空手留空, .terraria-font(Baloo 2 + Noto Sans SC 回退, 新增 CSS 类)
+  - 背包面板改为左上锚定、紧贴快捷栏向下展开(原版无底板, 槽位直浮世界): 面板第 1-3 行与常驻快捷栏同列对齐(同槽同距 gap-[2px])构成 4x10 网格; 面板打开时快捷栏行自动切换为背包语义(clickSlot 可拿放), 关闭时左键=selectHotbar(合并了原"重复第 0 行"两套槽位)
+  - 盔甲三槽(头/身/腿)+防御(盾+数字)+工作站指示在网格下方一行; 合成列表(图标+名称, 仅 can=true, hover 配方 tooltip, 点击 engine.craft)在面板底部, 自带 max-h-36/44 滚动; 面板整体 max-h-[calc(100vh-13rem)] + max-w + overflow-y-auto + hud-scroll + touch-pan-y
+  - 心形血条 20 颗/行(lg+ 单行 478px, 以下 max-w-[238px] 自动 10 颗换行, 375px 实测 2 行不溢出), 保留 tex.heartURL/heartEmptyURL 半心裁剪与 hud-heart-pulse; 心形+呼吸气泡+防御随左列流式排列(面板关闭时紧贴快捷栏下方, 打开时在面板下方, 还原原版"心形下移"行为)
+  - 宝箱 5x4 金边槽位: lg 并排在背包网格右侧(lg:order-2), 小屏在网格上方(flex-col 默认序)
+  - Boss 血条移至底部中央: 黑半透明底 + 红条(#d03838 系渐变) + 金/古铜边 #c9a227 + 黑外圈, Boss 名白字黑描边在条上、HP 数字在条下, 保留全部 aria 属性, 去掉非原版刻度线
+  - 右上信息(小地图正下方 top-[186px] right-[11px] 与地图右缘对齐): 群系/深度(X 米)/昼夜改为原版信息配件风格裸文字(白 11px + 黑描边, 无背景框); 智能光标按钮改原版蓝小按钮
+  - 左下消息去掉金色左竖条 → 纯半透明黑底白字(原版聊天); 右下三按钮(背包/静音/帮助)改原版蓝 rgba(63,82,151,.85)+亮蓝边; 帮助面板底色改原版蓝
+  - 全文件清除 #6a76b8/8a96cc 蓝紫色系(禁 indigo 达成); coarse 媒体规则重算: hud-panel 由 bottom 让位改为 max-height:60vh(顶部锚定不再碰摇杆), hud-br/hud-msgs/hud-ibtn 让位规则原样保留
+  - 保留全部功能: useUIState/useTextures 订阅、SlotCell onActivate/onHover(pointer 事件+触屏语义+右键)、MouseTooltip/CursorItemView/ItemTooltipContent/RecipeTooltipContent、E/Esc/M/H/数字键、GAME_CONTROLS/GAME_DEV_CONTROLS_LINE 导出(Overlays 依赖)、hud-fade-in 等动画
+- 验证: bunx tsc --noEmit(过滤 examples/skills 后)零错误(仅剩 4 个 examples/skills 既有错误); bun run lint exit 0
+- agent-browser 实测(1280x800 桌面 + 375x667 手机):
+  - 进入世界 __game.enterWorld(): 快捷栏 x:12 顶部左上, 选中槽实测 49px(44×1.12 缩放生效); 20 心单行 w:478 y:62(紧贴快捷栏下方, lifeCrystal 提满 maxHp=200 验证)
+  - 背包打开: 面板 y:62 紧贴快捷栏, 网格列 x:12 与快捷栏完全对齐(aligned=true), 宝箱/盔甲/工作站/合成列表全渲染; 手机 375px: 面板 top 锚定 h:228 不遮摇杆, 心形 2 行×10 棵不溢出, 快捷栏右缘 344<375
+  - Boss: 夜晚用 EoC 召唤物实测, 血条 x:360 w:560 于 1280 视口精确居中, 底缘 768=800-12(bottom-3)
+  - 交互回归: 槽位 pointerdown 点击选中 hotbar=3 ✓; addItem 木材后合成列表出现"木平台×2"并点击合成成功(木 50→49, 平台+2) ✓; 快捷栏物品名"火把"显示 ✓; 零 page error
+  - VLM 视觉评审 3 轮(桌面开面板/手机开面板/桌面关面板): 全部"布局正常", 与原版 1.4 对照项全符合
+- 截图: agent-ctx/13a_hud_desktop_closed.png / 13a_hud_desktop_20hearts.png / 13a_hud_desktop_bossbar.png / 13a_hud_desktop_final.png / 13a_hud_mobile_375_inventory.png / 13a_hud_final_verify.png
+
+Stage Summary:
+- 交付: HUD.tsx 单文件原版化重做 — 左上快捷栏+背包向下展开(4x10 同列对齐, 原版蓝槽位/金选中)、心形 20/行在其下(小屏 10 换行)、底部中央 Boss 条、右上裸文字信息+蓝按钮、左下纯黑底聊天、右下蓝色按钮组; 心形随背包展开自动下移还原原版行为; 全部交互与导出契约不变
+- 关键决策: ①背包打开时快捷栏行即网格第 0 行(切 clickSlot 语义), 消除旧版重复行 ②面板无底板(原版槽位直浮世界) ③槽位尺寸 h-8→lg:h-11 断点后移, 规避 640-760px 视口与 256px 小地图重叠 ④coarse 面板由 bottom 让位改 max-h:60vh 顶部锚定
+- 已知边界: 手机 375px 下快捷栏/面板与引擎固定 256x168 小地图部分重叠(渲染层归属 render.ts, 本任务红线不可动), HUD 在上层功能不受影响
+
+---
+Task ID: 13-c
+Agent: main
+Task: 全代码物理/刷怪 bug 修复 — 人物与怪物"卡死+消失"根治
+
+Work Log:
+- 根因分析: ① moveBody stepUp 只查目标列抬升区间, 漏查当前列头部上方 → 低顶棚下自动上台阶把头嵌进天花板(卡死+光照罩下隐形=消失); ② tickSpawn 洞穴/地表刷怪只查 1-2 格, 僵尸(h=36, 跨3行)头可嵌顶棚/悬崖, 飞行怪可生在山体内; ③ noPickup 按数组下标标记, splice 后错位; ④ 掉落物掉进岩浆永不消失
+- entities.ts: 新增 boxClear(整身盒全列×全高实心检查) + unstickBody(防卡死安全网: 上/左右/下最近空位推移); stepUp 改用 boxClear 全盒检查; Enemy 增 stuck? 字段
+- engine.ts: 玩家/向导/敌怪每帧 unstickBody 安全网; 敌怪连续嵌死 600 帧静默消散(Boss 豁免); tickSpawn 四条路径(地表地面/地表飞行/洞穴地面/洞穴飞行)全部整身 clearance, 地面怪出生位改 exact 站面顶; EoC 召唤 5 候选位找无遮挡; tickDrops noPickup 改按 Drop 引用 + 岩浆烧毁掉落物
+- render.ts: 小地图窄屏(<768px)缩至 168x110(原 256x168) 避让左上快捷栏, 边框色改原版蓝; HUD.tsx 信息条断点适配 top-[128px] md:top-[186px]
+- layout.tsx: 新增 Baloo_2(--font-andy, 原版 Andy 字体近似) + Noto_Sans_SC(--font-cjk)
+- public/assets: 新增 terraria_logo.png(官方 Steam logo 裁剪 628x193 透明底) + Lesser_Healing_Potion.png(补齐参考站缺件)
+- 验证(agent-browser 实测): 嵌进石头的骷髅 2s 内被推移到 24px 下方的洞腔(stuck=0 存活); 低顶棚+台阶场景按住 D 玩家被正确阻挡仅移动 2px 且 headRow=134 未嵌入顶棚行 133(旧代码必嵌); 开阔台阶 +82px 正常通过; 标题屏/HUD/背包/暂停菜单 VLM 全过; 手机 375px 快捷栏与小地图零重叠; 全程零 page error; tsc(排除 examples/skills 既有 4 错)/lint 零错误
+
+Stage Summary:
+- "卡消失"四根因全部修复: stepUp 全盒检查 / 刷怪整身 clearance / unstickBody 安全网(含读档旧位置兜底) / 长期嵌死敌怪 10s 消散
+- 附带修复: 掉落物岩浆烧毁 / noPickup 引用化 / Boss 召唤位防嵌 / 小地图窄屏缩放
+
+---
+Task ID: 13-d
+Agent: general-purpose (standalone 同步)
+Task: 主版 13-a/13-b/13-c 全部改动同步到单文件版(standalone/)并重建 public/terraria.html
+
+Work Log:
+- 上下文确认: standalone/main.ts 直接 import ../src/game/engine(引擎/实体/渲染共享), 13-c 物理/刷怪修复(boxClear/unstickBody/stepUp 全盒检查/每帧防卡死安全网/tickSpawn 整身 clearance/EoC 5 候选位/tickDrops noPickup Map+岩浆烧毁/Enemy stuck 字段/小地图 168x110)随 src 自动进入产物, 无需镜像; 重建即生效(产物内 8 处 13-c 代码模式逐一 grep 验证在包)
+- standalone/main.ts 全面重写(1170→约 1290 行, 只改 UI 层, 引擎/触屏/存档/音乐零回归):
+  - HUD 原版化(对照 HUD.tsx): 新增 #topleft 左上纵向列(快捷栏行→背包面板→心形/呼吸/防御); 槽位改原版蓝 rgba(63,82,151,.8)+亮蓝边+圆角 3px, 选中金框 #f7d060+scale 1.12+translateY(-2px)+呼吸光; 快捷栏移到左上(left-1.5/top-1.5, 序号 1-0), 手持物品名显示在右侧(≥720px); 背包面板无底板、紧贴快捷栏向下展开(取消旧 #inv-hot 重复行, 面板打开时快捷栏行即网格第 0 行切 clickSlot 语义), 盔甲 3 槽(与普通槽同尺寸)+防御+工作站在网格下方, 合成列表最下(max-h 144/176 滚动); 心形 20 颗/行(小屏 max-w 238px 自动 10 颗换行); Boss 血条移到底部中央(黑底 rgba(8,6,6,.78)+红条渐变+金边 #c9a227+黑外圈, 去掉刻度线); 右上信息改小地图下方裸文字白字黑描边(128px/186px 断点)+智能光标蓝色小按钮; 消息纯黑底白字(去金色竖条); 右下按钮组原版蓝+新增背包按钮
+  - 修复既有 bug: smart-btn 此前只渲染未绑定点击 → 绑定 toggleSmart
+  - 覆盖层原版化(对照 Overlays.tsx): 标题屏官方 terraria_logo(内嵌 data URI, min(80vw,560px) 居中偏上)+石质菜单按钮(#3d4355→#2b3040 渐变+#565e78 边+inset 高光, 奶油→橙渐变字 background-clip:text+drop-shadow, gold 金边略大)+左下"Web 复刻版 v0.2"+右下版权行+GitHub 图标链接(octocat SVG, 新标签); 生成对话框/暂停菜单/帮助弹窗换 .t-panel 原版蓝(rgba(28,36,74,.96)+rgba(120,140,220,.8) 边)+t-input/t-radio/t-close; 暂停菜单底部 GitHub 行; 死亡屏"{玩家名} 被杀死了…"大红字(#e03c3c+8 向深红描边+黑投影); Loading 白字黑描边
+  - 字体: .terraria-font('Baloo 2','Noto Sans SC',…), 覆盖层根节点+HUD 标题/物品名/按钮应用
+  - coarse 让位规则同步 13-a 版: #hud-btns bottom+128px/隐藏提示/按钮≥44px/#msgs bottom+152px/#inv max-h 60vh(样式表内逐条验证); 触屏层 tc-world/摇杆/跳跃钮原样保留
+- standalone/build.ts: 新增 EXTRA_ASSETS=[terraria_logo, Lesser_Healing_Potion] 并入内嵌清单(不动 src ASSET_MANIFEST); <head> 注入 Google Fonts(Baloo 2 400/700/800 + Noto Sans SC 400/700/900, display=swap, 离线回退系统字体)
+- bun standalone/build.ts → public/terraria.html 1766.4KB(139 个唯一素材全内嵌, 含 logo; 旧 1641KB, +125KB 主要为 logo 90KB×base64)
+- 浏览器实测(agent-browser, 1280x800 + 375x667):
+  - 标题屏: logo data URI 560x172 居中(y=80=min(12vh,80px)), 石质按钮渐变/金边/clip=text 渐变字全部 computed style 命中, 版本/版权/GitHub href+target ✓, 像素采样 logo 绿字 9090px+石质底 9032px
+  - HUD: 快捷栏 x12/y12 左上 10 槽 44px, 选中槽 49px(1.12 缩放)+金框; maxHp=200 时 20 心单行 478px 紧贴快捷栏; 背包面板 y62 与快捷栏同列对齐(10 列×30 格)+无底板+盔甲行/工作站/合成列表+心形随面板下移; Boss 条 x360 w560 精确居中+底缘 788=800-12+金边; 右上裸文字 y186; 消息黑底; 按钮组蓝+背包按钮; 像素采样蓝槽 4106px/金边 218px/红心 2220px/黑底消息 4665px
+  - 交互回归: 数字键选槽/E 开背包/合成点击(木 50→49+木平台×2)/保存按钮写档/智能光标按钮开合/生成对话框单选与开始冒险/标题屏帮助弹窗 ✓
+  - 防卡死(13-c 引擎同步验证): skel(kind skel, night:false)嵌进玩家下方 20 格石头+下方 48px 洞腔 → 2.2s 后被推移 +48px 入洞腔, stuck=0 存活未 dead; 全埋石(无空腔)skel → stuck 计数 601(>600)粒子消散+dead+移出列表; 玩家嵌石 → 1.2s 内被推下 48px 且 fallStart 被重置为 null
+  - 手机 375x667: 快捷栏 338px 不溢出(选中槽 36px 缩放生效), 心形 2 行×10 棵, 面板 top 锚定 max-h 459px, coarse 五条让位规则在样式表逐条命中, 小地图 168px 宽(边框起点 x190 像素采样确认 13-c 缩放生效)
+  - 零 page error/零 console 错误; performance resource 检查 png/素材外链请求 = 0(仅 Google Fonts CSS+woff2, 任务豁免项); document.fonts.check('Baloo 2')=true
+  - VLM 视觉评审(标题/HUD/背包 3 张): 标题屏与 HUD 全部符合原版 1.4; 其报"背包内心形重叠"经像素扫描证伪(全屏仅 y334-348 一条心形带, DOM .heart=10 颗, 另两条红带为图标/世界内红色物体)
+  - 测试后清理: localStorage tw-save-v2 测试世界已清除
+- bunx tsc --noEmit(过滤 examples/skills)零错误; bun run lint exit 0
+
+Stage Summary:
+- 交付: standalone/main.ts UI 层全面原版化(13-a HUD 布局+13-b 标题/暂停/死亡屏)+build.ts 素材/字体增强+public/terraria.html 重建 1766.4KB; 13-c 物理修复经共享引擎自动带入并实测(嵌石推移/长期消散/玩家安全网三例全过)
+- 双版本视觉现已同步: 主版(/)与单文件版(/terraria.html)同为官方 logo+石质按钮+原版蓝 UI; 单文件版零素材外链(仅 Google Fonts)

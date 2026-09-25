@@ -1277,11 +1277,13 @@ export function renderGame(g: GameEngine): void {
 
 function drawMinimap(g: GameEngine, ctx: CanvasRenderingContext2D, W: number): void {
   if (!g.mmCanvas) return;
-  const mw = 256, mh = 168;
+  // 13-c: 窄屏缩小小地图(<768px 用 0.66 倍, 与 HUD md: 断点一致), 避免压到左上快捷栏
+  const small = W < 768;
+  const mw = small ? 168 : 256, mh = small ? 110 : 168;
   const mx = W - mw - 14, my = 12;
   ctx.fillStyle = 'rgba(8,10,20,0.55)';
   ctx.fillRect(mx - 3, my - 3, mw + 6, mh + 6);
-  ctx.strokeStyle = 'rgba(106,118,184,0.8)';
+  ctx.strokeStyle = 'rgba(120,140,220,0.8)';
   ctx.lineWidth = 2;
   ctx.strokeRect(mx - 3, my - 3, mw + 6, mh + 6);
 

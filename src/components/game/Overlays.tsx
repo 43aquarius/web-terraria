@@ -2,11 +2,11 @@
 
 /**
  * 全屏覆盖层 — loading / 标题屏 / 世界生成对话框 / 死亡 / 暂停菜单 / 标题屏帮助弹窗
- * 根据游戏 UI 状态切换,所有覆盖层带 fade-in 动画
+ * 视觉完全仿原版 Terraria 1.4:官方 logo + 石质菜单按钮 + 原版蓝 UI 面板,根据游戏 UI 状态切换,带 fade-in 动画
  */
 
 import { useState, type ReactNode } from 'react'
-import { Volume2, VolumeX } from 'lucide-react'
+import { Github, Volume2, VolumeX } from 'lucide-react'
 import { engine } from '@/game/engine'
 import { useToast } from '@/hooks/use-toast'
 import { GAME_CONTROLS, GAME_DEV_CONTROLS_LINE, useUIState } from '@/components/game/HUD'
@@ -23,9 +23,126 @@ const OVL_CSS = `
 }
 .ovl-fade { animation: ovlFade 0.3s ease-out; }
 .ovl-spin { animation: ovlSpin 1.2s steps(8) infinite; }
+
+/* ==================== 原版 Terraria 1.4 UI 风格 ==================== */
+
+/* 字体:近似原版 Andy 的圆润粗体,中文回退 Noto Sans SC */
+.terraria-font { font-family: var(--font-andy), var(--font-cjk), sans-serif; }
+
+/* 白字黑描边(原版本本号/版权行/面板文字效果) */
+.t-stroke {
+  text-shadow:
+    1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000,
+    1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000;
+}
+
+/* 石质菜单按钮(标题屏主菜单/弹窗小按钮通用) */
+.t-menu-btn {
+  width: 100%;
+  padding: 12px 24px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  border: 2px solid #565e78;
+  border-radius: 3px;
+  background: linear-gradient(180deg, #3d4355 0%, #2b3040 100%);
+  box-shadow:
+    inset 0 2px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -3px 0 rgba(0, 0, 0, 0.35),
+    0 2px 5px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  transition: filter 0.07s linear;
+}
+.t-menu-btn-sm { padding: 8px 18px; font-size: 13px; letter-spacing: 0.06em; }
+.t-menu-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, #4a5266 0%, #363c50 100%);
+  filter: brightness(1.1);
+}
+.t-menu-btn:active:not(:disabled) { transform: translateY(1px); filter: brightness(0.92); }
+.t-menu-btn:disabled { opacity: 0.55; cursor: default; }
+
+/* 主推按钮(gold):金边 + 略大 */
+.t-menu-btn-gold { border-color: #a8853c; background: linear-gradient(180deg, #4a5266 0%, #333a4e 100%); }
+.t-menu-btn-gold:not(.t-menu-btn-sm) { padding: 14px 24px; font-size: 19px; }
+
+/* 按钮文字:原版奶油→橙渐变字(drop-shadow 让渐变字带黑色投影) */
+.t-btn-text {
+  background-image: linear-gradient(180deg, #ffe9b0 30%, #f0b840 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(1px 2px 0 rgba(0, 0, 0, 0.55));
+}
+.t-btn-text-gold { background-image: linear-gradient(180deg, #fff8d0 25%, #f7c94a 90%); }
+.t-menu-btn:hover:not(:disabled) .t-btn-text { background-image: linear-gradient(180deg, #ffffff 25%, #ffe9a8 90%); }
+.t-menu-btn:disabled .t-btn-text { background-image: linear-gradient(180deg, #b8bcc8 30%, #8a8e9a 90%); }
+
+/* 原版蓝 UI 面板(世界生成/暂停/帮助弹窗) */
+.t-panel {
+  background: rgba(28, 36, 74, 0.96);
+  border: 2px solid rgba(120, 140, 220, 0.8);
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 10px 36px rgba(0, 0, 0, 0.7);
+}
+
+/* 面板内输入框:原版蓝底 + 亮蓝边,聚焦金色 */
+.t-input {
+  width: 100%;
+  background: rgba(63, 82, 151, 0.35);
+  border: 2px solid rgba(120, 140, 220, 0.8);
+  border-radius: 3px;
+  color: #f0f2fa;
+  transition: border-color 0.1s linear;
+}
+.t-input::placeholder { color: rgba(165, 180, 225, 0.55); }
+.t-input:focus { border-color: #f7d060; outline: none; }
+.t-input:disabled { opacity: 0.55; }
+
+/* 世界大小单选按钮 */
+.t-radio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: rgba(63, 82, 151, 0.35);
+  border: 2px solid rgba(120, 140, 220, 0.8);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color 0.1s linear;
+}
+.t-radio:hover:not(:disabled) { border-color: #9cb0f0; }
+.t-radio.t-active { border-color: #f7d060; background: rgba(110, 90, 40, 0.4); }
+
+/* 弹窗右上角关闭按钮 */
+.t-close {
+  background: rgba(63, 82, 151, 0.35);
+  border: 1px solid rgba(120, 140, 220, 0.8);
+  border-radius: 2px;
+  color: #dfe6ff;
+  cursor: pointer;
+  transition: border-color 0.1s linear, color 0.1s linear;
+}
+.t-close:hover:not(:disabled) { border-color: #f7d060; color: #f7d060; }
+.t-close:disabled { opacity: 0.5; cursor: default; }
+
+/* 帮助弹窗按键徽标 */
+.t-key {
+  background: rgba(63, 82, 151, 0.35);
+  border: 1px solid rgba(120, 140, 220, 0.8);
+  border-radius: 2px;
+  color: #f0e8c8;
+}
+
+/* 死亡屏大红字:深红描边 + 黑投影 */
+.t-death {
+  color: #e03c3c;
+  text-shadow:
+    2px 2px 0 #7a1414, -2px 2px 0 #7a1414, 2px -2px 0 #7a1414, -2px -2px 0 #7a1414,
+    2px 0 0 #7a1414, -2px 0 0 #7a1414, 0 2px 0 #7a1414, 0 -2px 0 #7a1414,
+    0 6px 16px rgba(0, 0, 0, 0.8);
+}
 `
 
-/** 泰拉瑞亚风格菜单按钮 */
+/** 泰拉瑞亚原版石质菜单按钮 */
 function MenuButton({
   onClick,
   children,
@@ -41,16 +158,26 @@ function MenuButton({
     <button
       type="button"
       onClick={onClick}
-      className={`w-full border-2 font-bold tracking-wider transition-colors active:translate-y-0.5 ${
-        small ? 'px-6 py-2 text-sm' : 'px-8 py-3'
-      } ${
-        gold
-          ? 'border-[#f7e07a] bg-[#b8912e] text-[#fff6d8] hover:bg-[#d0a83e] [text-shadow:1px_1px_0_rgba(0,0,0,0.5)]'
-          : 'border-[#6a76b8] bg-[#2a4a2e] text-[#f0e8c8] hover:bg-[#3a6a40] [text-shadow:1px_1px_0_#000]'
-      }`}
+      className={`t-menu-btn ${gold ? 't-menu-btn-gold' : ''} ${small ? 't-menu-btn-sm' : ''}`}
     >
-      {children}
+      <span className={`t-btn-text ${gold ? 't-btn-text-gold' : ''}`}>{children}</span>
     </button>
+  )
+}
+
+/** GitHub 仓库入口(标题屏右下角 / 暂停菜单底部) */
+function GitHubLink({ iconSize, withText = false }: { iconSize: number; withText?: boolean }) {
+  return (
+    <a
+      href="https://github.com/43aquarius/web-terraria"
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="GitHub 仓库"
+      className="pointer-events-auto inline-flex items-center gap-1.5 text-[#9ab8e0]/80 transition-colors hover:text-white"
+    >
+      <Github size={iconSize} aria-hidden />
+      {withText && <span className="text-[11px] tracking-wider">web-terraria</span>}
+    </a>
   )
 }
 
@@ -92,22 +219,27 @@ export default function Overlays() {
   const showPaused = st.paused && st.screen === 'playing' && !st.loading
 
   return (
-    <div className="pointer-events-none absolute inset-0">
+    <div className="terraria-font pointer-events-none absolute inset-0">
       <style>{OVL_CSS}</style>
 
-      {/* ---- 标题屏(背后是活的游戏世界渲染,加一层轻微暗化) ---- */}
+      {/* ---- 标题屏(背后是活的游戏世界渲染,原版标题屏背景较亮,只加轻微暗化) ---- */}
       {showTitle && (
-        <div className="ovl-fade pointer-events-none absolute inset-0 z-40 bg-black/30">
-          <div className="flex h-full flex-col items-center justify-center gap-8 px-4 sm:gap-10">
-            <div className="text-center">
-              <h1 className="text-5xl font-black tracking-wide text-[#4ec44e] [text-shadow:0_4px_0_#1d5c1d,0_8px_0_rgba(0,0,0,0.6)] sm:text-6xl md:text-7xl lg:text-8xl">
-                TERRARIA
-              </h1>
-              <p className="mt-4 text-xs tracking-[0.35em] text-[#e8e4d8]/85 [text-shadow:1px_1px_0_#000] sm:text-sm">
-                WEB 复刻版 · 程序化像素世界
-              </p>
-            </div>
-            <nav className="pointer-events-auto flex w-64 flex-col gap-3 sm:w-72" aria-label="主菜单">
+        <div className="ovl-fade pointer-events-none absolute inset-0 z-40 bg-black/20">
+          <div className="flex h-full flex-col items-center px-4">
+            {/* 原版 Terraria logo(官方素材,居中偏上) */}
+            <img
+              src="/assets/terraria_logo.png"
+              alt="Terraria"
+              width={628}
+              height={193}
+              draggable={false}
+              className="mt-[min(12vh,80px)] w-[min(80vw,560px)] select-none drop-shadow-[0_5px_10px_rgba(0,0,0,0.5)]"
+            />
+            {/* 主菜单:logo 下方竖排居中,原版石质按钮 */}
+            <nav
+              className="pointer-events-auto mt-[min(6vh,48px)] flex w-72 flex-col gap-3 sm:w-80"
+              aria-label="主菜单"
+            >
               <MenuButton gold onClick={() => engine.enterWorld()}>
                 进入世界
               </MenuButton>
@@ -118,25 +250,33 @@ export default function Overlays() {
               <MenuButton onClick={() => setShowHelp(true)}>操作指南</MenuButton>
             </nav>
           </div>
-          <p className="absolute inset-x-0 bottom-3 px-4 text-center text-[11px] text-[#e8e4d8]/50 [text-shadow:1px_1px_0_#000]">
-            泰拉瑞亚 Web 复刻 v0.1 · 致敬 Re-Logic 的伟大作品
+          {/* 左下角版本号 */}
+          <p className="t-stroke absolute bottom-2 left-3 text-[11px] text-white">
+            Web 复刻版 v0.2
           </p>
+          {/* 右下角版权行 + GitHub 仓库图标 */}
+          <div className="absolute bottom-2 right-3 flex items-center gap-2">
+            <p className="t-stroke text-[10px] text-white sm:text-[11px]">
+              Copyright © Re-Logic — Web 复刻致敬之作
+            </p>
+            <GitHubLink iconSize={16} />
+          </div>
         </div>
       )}
 
-      {/* ---- 世界生成对话框(覆盖标题屏,深色像素风面板) ---- */}
+      {/* ---- 世界生成对话框(覆盖标题屏,原版蓝面板) ---- */}
       {showGen && (
         <div className="ovl-fade pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-[22rem] max-w-full rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.97)] p-4 shadow-[0_0_0_1px_#000,0_8px_32px_rgba(0,0,0,0.8)] sm:w-[24rem]">
+          <div className="t-panel w-[22rem] max-w-full p-4 sm:w-[25rem]">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-bold tracking-widest text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+              <h2 className="t-stroke text-base font-bold tracking-widest text-[#f7d060]">
                 生成新世界
               </h2>
               <button
                 type="button"
                 aria-label="关闭世界生成对话框"
                 disabled={generating}
-                className="border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] px-2 py-0.5 text-xs text-[#e8e4d8] transition-colors hover:border-[#f7d060] disabled:opacity-50"
+                className="t-close px-2 py-0.5 text-xs"
                 onClick={() => setShowGen(false)}
               >
                 ✕
@@ -145,7 +285,7 @@ export default function Overlays() {
 
             {/* 世界大小三选一 */}
             <div className="mb-3">
-              <span className="mb-1.5 block text-xs font-bold text-[#f0e8c8] [text-shadow:1px_1px_0_#000]">
+              <span className="t-stroke mb-1.5 block text-xs font-bold text-[#f0e8c8]">
                 世界大小
               </span>
               <div className="grid grid-cols-3 gap-1.5" role="radiogroup" aria-label="世界大小">
@@ -160,15 +300,11 @@ export default function Overlays() {
                       aria-checked={active}
                       disabled={generating}
                       onClick={() => setGenSize(s)}
-                      className={`flex flex-col items-center border-2 px-1 py-1.5 transition-colors disabled:opacity-60 ${
-                        active
-                          ? 'border-[#f7d060] bg-[rgba(60,48,16,0.9)]'
-                          : 'border-[#6a76b8] bg-[rgba(28,34,66,0.85)] hover:border-[#8a96cc]'
-                      }`}
+                      className={`t-radio px-1 py-1.5 disabled:opacity-60 ${active ? 't-active' : ''}`}
                     >
                       <span
                         className={`text-sm font-bold leading-tight ${
-                          active ? 'text-[#f7d060]' : 'text-[#e8e4d8]'
+                          active ? 'text-[#f7d060]' : 'text-[#f0e8c8]'
                         } [text-shadow:1px_1px_0_#000]`}
                       >
                         {sz.label}
@@ -184,7 +320,7 @@ export default function Overlays() {
 
             {/* 种子 */}
             <label className="mb-3 block">
-              <span className="mb-1 block text-xs font-bold text-[#f0e8c8] [text-shadow:1px_1px_0_#000]">
+              <span className="t-stroke mb-1 block text-xs font-bold text-[#f0e8c8]">
                 世界种子
               </span>
               <input
@@ -194,13 +330,13 @@ export default function Overlays() {
                 maxLength={32}
                 placeholder="留空随机"
                 onChange={(e) => setGenSeed(e.target.value)}
-                className="w-full border-2 border-[#6a76b8] bg-[rgba(10,12,26,0.9)] px-2 py-1.5 text-sm text-[#e8e4d8] placeholder:text-[#6a6a7a] focus:border-[#f7d060] focus:outline-none disabled:opacity-60"
+                className="t-input px-2 py-1.5 text-sm"
               />
             </label>
 
             {/* 角色名 */}
             <label className="mb-3 block">
-              <span className="mb-1 block text-xs font-bold text-[#f0e8c8] [text-shadow:1px_1px_0_#000]">
+              <span className="t-stroke mb-1 block text-xs font-bold text-[#f0e8c8]">
                 角色名
               </span>
               <input
@@ -209,7 +345,7 @@ export default function Overlays() {
                 disabled={generating}
                 maxLength={12}
                 onChange={(e) => setGenName(e.target.value)}
-                className="w-full border-2 border-[#6a76b8] bg-[rgba(10,12,26,0.9)] px-2 py-1.5 text-sm text-[#e8e4d8] placeholder:text-[#6a6a7a] focus:border-[#f7d060] focus:outline-none disabled:opacity-60"
+                className="t-input px-2 py-1.5 text-sm"
               />
             </label>
 
@@ -222,7 +358,7 @@ export default function Overlays() {
                 onChange={(e) => setGenDev(e.target.checked)}
                 className="h-4 w-4 shrink-0 accent-[#f7d060]"
               />
-              <span className="text-xs leading-snug text-[#e8e4d8]">
+              <span className="text-xs leading-snug text-[#c8d0e8]">
                 开发者模式（飞行 / 刷怪 / 昼夜切换）
               </span>
             </label>
@@ -242,35 +378,37 @@ export default function Overlays() {
             {generating && (
               <div className="mt-2 flex items-center justify-center gap-2" role="status">
                 <div className="ovl-spin h-4 w-4 border-2 border-[#f7d060]" aria-hidden />
-                <span className="text-[11px] tracking-widest text-[#9ab8e0]">正在生成世界…</span>
+                <span className="t-stroke text-[11px] tracking-widest text-[#9ab8e0]">
+                  正在生成世界…
+                </span>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* ---- 死亡 ---- */}
+      {/* ---- 死亡屏(原版文案:你被杀死了…) ---- */}
       {showDead && (
-        <div className="ovl-fade pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-4 bg-red-950/60">
-          <h2 className="max-w-[90vw] text-center text-4xl font-black text-[#e03c3c] [text-shadow:0_3px_0_#5a0f0f,0_6px_0_rgba(0,0,0,0.6)] sm:text-6xl">
-            {st.playerName}死亡了…
+        <div className="ovl-fade pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-5 bg-red-950/45">
+          <h2 className="t-death max-w-[90vw] text-center text-4xl font-black sm:text-6xl">
+            {st.playerName} 被杀死了…
           </h2>
-          <p className="animate-pulse text-sm tracking-[0.3em] text-[#e8c8c8] [text-shadow:1px_1px_0_#000]">
-            即将重生
+          <p className="t-stroke animate-pulse text-sm tracking-[0.3em] text-[#ffd6d6]">
+            即将重生…
           </p>
         </div>
       )}
 
-      {/* ---- 暂停菜单 ---- */}
+      {/* ---- 暂停菜单(原版蓝面板 + 石质按钮) ---- */}
       {showPaused && (
         <div className="ovl-fade pointer-events-auto absolute inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-72 max-w-full rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.95)] p-5">
-            <h2 className="mb-2 text-center text-lg font-bold tracking-widest text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+          <div className="t-panel w-72 max-w-full p-5">
+            <h2 className="t-stroke mb-2 text-center text-lg font-bold tracking-widest text-[#f7d060]">
               已暂停
             </h2>
             {/* 玩家名 / 世界种子 / 开发者模式徽标 */}
             <div className="mb-4 flex flex-col items-center gap-1.5">
-              <p className="text-center text-[11px] leading-relaxed text-[#9ab8e0] [text-shadow:1px_1px_0_#000]">
+              <p className="t-stroke text-center text-[11px] leading-relaxed text-[#9ab8e0]">
                 玩家：{st.playerName}
                 {st.seed && (
                   <>
@@ -280,7 +418,7 @@ export default function Overlays() {
                 )}
               </p>
               {st.devMode && (
-                <span className="border border-[#f7d060]/70 bg-[rgba(60,48,16,0.6)] px-2 py-0.5 text-[10px] font-bold tracking-wider text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+                <span className="t-stroke border border-[#f7d060]/70 bg-[rgba(110,90,40,0.5)] px-2 py-0.5 text-[10px] font-bold tracking-wider text-[#f7d060]">
                   开发者模式已开启
                 </span>
               )}
@@ -293,8 +431,12 @@ export default function Overlays() {
                 保存游戏
               </MenuButton>
               <MenuButton small onClick={() => engine.toggleMute()}>
-                <span className="flex items-center justify-center gap-2">
-                  {st.muted ? <VolumeX size={15} aria-hidden /> : <Volume2 size={15} aria-hidden />}
+                <span className="inline-flex items-center justify-center gap-2">
+                  {st.muted ? (
+                    <VolumeX size={15} className="text-[#f0b840]" aria-hidden />
+                  ) : (
+                    <Volume2 size={15} className="text-[#f0b840]" aria-hidden />
+                  )}
                   声音：{st.muted ? '关' : '开'}
                 </span>
               </MenuButton>
@@ -302,22 +444,26 @@ export default function Overlays() {
                 回到标题
               </MenuButton>
             </div>
+            {/* 面板底部 GitHub 仓库链接 */}
+            <div className="mt-4 flex justify-center border-t border-[rgba(120,140,220,0.35)] pt-3">
+              <GitHubLink iconSize={13} withText />
+            </div>
           </div>
         </div>
       )}
 
-      {/* ---- 标题屏帮助弹窗 ---- */}
+      {/* ---- 标题屏帮助弹窗(原版蓝面板) ---- */}
       {showHelp && (
         <div className="ovl-fade pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-[19rem] max-w-full rounded-md border-2 border-[#6a76b8] bg-[rgba(16,20,40,0.96)] p-4">
+          <div className="t-panel w-[19rem] max-w-full p-4">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold tracking-widest text-[#f0e8c8] [text-shadow:1px_1px_0_#000]">
+              <h2 className="t-stroke text-sm font-bold tracking-widest text-[#f0e8c8]">
                 操作说明
               </h2>
               <button
                 type="button"
                 aria-label="关闭操作说明"
-                className="border border-[#6a76b8] bg-[rgba(28,34,66,0.85)] px-2 py-0.5 text-xs text-[#e8e4d8] transition-colors hover:border-[#f7d060]"
+                className="t-close px-2 py-0.5 text-xs"
                 onClick={() => setShowHelp(false)}
               >
                 ✕
@@ -326,22 +472,22 @@ export default function Overlays() {
             <ul className="flex flex-col gap-1.5">
               {GAME_CONTROLS.map(([k, d]) => (
                 <li key={k} className="flex items-center justify-between gap-3 text-xs">
-                  <span className="whitespace-nowrap border border-[#6a76b8] bg-[#262c50] px-1.5 py-0.5 font-mono text-[10px] text-[#f0e8c8]">
+                  <span className="t-key whitespace-nowrap px-1.5 py-0.5 font-mono text-[10px]">
                     {k}
                   </span>
-                  <span className="text-right text-[#b8b4a8]">{d}</span>
+                  <span className="text-right text-[#b8c0d8]">{d}</span>
                 </li>
               ))}
             </ul>
             {st.devMode && (
-              <div className="mt-2 flex items-center justify-between gap-3 border-2 border-[#f7d060]/50 bg-[rgba(60,48,16,0.45)] px-2 py-1.5">
-                <span className="text-[10px] font-bold tracking-wider text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+              <div className="mt-2 flex items-center justify-between gap-3 border-2 border-[#f7d060]/50 bg-[rgba(110,90,40,0.35)] px-2 py-1.5">
+                <span className="t-stroke text-[10px] font-bold tracking-wider text-[#f7d060]">
                   开发者
                 </span>
                 <span className="text-right text-[11px] text-[#e8c878]">{GAME_DEV_CONTROLS_LINE}</span>
               </div>
             )}
-            <p className="mt-3 border-t border-[#6a76b8]/40 pt-2 text-[10px] leading-relaxed text-[#8a8a9a]">
+            <p className="mt-3 border-t border-[rgba(120,140,220,0.4)] pt-2 text-[10px] leading-relaxed text-[#8a94b8]">
               本作为键盘 + 鼠标游戏:先砍树取木材制作工作台,再挖矿造更好的工具。夜晚会有敌怪出没!
             </p>
             <div className="mt-4">
@@ -357,9 +503,9 @@ export default function Overlays() {
       {st.loading && (
         <div className="ovl-fade pointer-events-auto absolute inset-0 z-40 flex flex-col items-center justify-center gap-6 bg-black/90">
           <div className="ovl-spin relative h-10 w-10 border-4 border-[#f7d060]" aria-hidden>
-            <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 bg-[#6a76b8]" />
+            <div className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 bg-[#78a0e0]" />
           </div>
-          <p className="text-sm tracking-[0.3em] text-[#e8e4d8] [text-shadow:1px_1px_0_#000]" role="status">
+          <p className="t-stroke text-sm tracking-[0.3em] text-white" role="status">
             {st.loadingText || '正在生成世界…'}
           </p>
         </div>

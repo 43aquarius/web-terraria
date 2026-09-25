@@ -22,6 +22,48 @@ export interface MoveOpts {
 
 export interface MoveResult { blockedX: boolean; landed: boolean; headBump: boolean }
 
+/**
+ * 判定身体盒(x=中心, y=脚底, half=半宽, h=高)覆盖的所有瓦片均非实心。
+ * 13-c: 抽出为公共工具(stepUp 全盒检查 / 出生点 clearance / 防卡死安全网共用)。
+ */
+export function boxClear(world: World, x: number, y: number, half: number, h: number): boolean {
+  const x0 = Math.floor((x - half + 0.01) / 16);
+  const x1 = Math.floor((x + half - 0.01) / 16);
+  const y0 = Math.floor((y - h + 0.01) / 16);
+  const y1 = Math.floor((y - 0.01) / 16);
+  for (let ty = y0; ty <= y1; ty++) {
+    for (let tx = x0; tx <= x1; tx++) {
+      if (world.isSolid(tx, ty)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * 防卡死安全网(13-c): 身体盒与实心格重叠时, 把它推到最近的无重叠位置。
+ * 优先向上(最多 2 格, 原版在方块内会向上冒出), 再左右, 最后向下。
+ * 无重叠时为纯查询 no-op, 每帧调用也无开销。返回是否发生了推移。
+ */
+export function unstickBody(world: World, b: Body): boolean {
+  const half = b.w / 2;
+  if (boxClear(world, b.x, b.y, half, b.h)) return false;
+  for (let dy = 2; dy <= 34; dy += 2) {
+    if (boxClear(world, b.x, b.y - dy, half, b.h)) {
+      b.y -= dy;
+      if (b.vy < 0) b.vy = 0;
+      return true;
+    }
+  }
+  for (let d = 2; d <= 34; d += 2) {
+    if (boxClear(world, b.x + d, b.y, half, b.h)) { b.x += d; b.vx = 0; return true; }
+    if (boxClear(world, b.x - d, b.y, half, b.h)) { b.x -= d; b.vx = 0; return true; }
+  }
+  for (let dy = 2; dy <= 34; dy += 2) {
+    if (boxClear(world, b.x, b.y + dy, half, b.h)) { b.y += dy; b.vy = 0; return true; }
+  }
+  return false;
+}
+
 export function moveBody(world: World, b: Body, o: MoveOpts): MoveResult {
   const res: MoveResult = { blockedX: false, landed: false, headBump: false };
   const half = b.w / 2;
@@ -41,13 +83,12 @@ export function moveBody(world: World, b: Body, o: MoveOpts): MoveResult {
     if (collides) {
       let stepped = false;
       if (o.stepUp && b.onGround) {
-        // 抬高一格后能否通过
-        let ok = true;
-        for (let ty = ty0 - 1; ty <= ty1 - 1; ty++) {
-          if (world.isSolid(tx, ty)) { ok = false; break; }
-        }
-        if (ok && !world.isSolid(tx, ty0 - 2)) {
-          b.y -= 16; b.x = nx; stepped = true;
+        // 13-c: 台阶抬升后整身盒(所有跨越列×整高)必须无实心。
+        // 旧实现只查目标列的抬升区间, 漏查当前列头部上方 → 低顶棚下自动上台阶
+        // 会把头嵌进天花板, 造成"卡在方块里+黑暗中隐形"。
+        const sy = b.y - 16;
+        if (boxClear(world, nx, sy, half, b.h)) {
+          b.y = sy; b.x = nx; stepped = true;
         }
       }
       if (!stepped) { res.blockedX = true; b.vx = 0; }
@@ -260,6 +301,7 @@ export interface Enemy extends Body {
   aiT?: number;        // 状态计时(帧)
   dashLeft?: number;   // 剩余冲刺次数(eoc)
   phase?: 0 | 1;       // eoc 阶段(0=hover/3冲, 1=spin后4连冲)
+  stuck?: number;      // 13-c: 连续嵌入实心格的帧数(长期卡死敌怪静默移除用)
 }
 
 export function spawnEnemy(kind: EnemyKind, x: number, y: number): Enemy {

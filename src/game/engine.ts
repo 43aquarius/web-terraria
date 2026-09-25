@@ -19,6 +19,7 @@ import {
   mkPlayer, updatePlayer, spawnEnemy, updateEnemy,
   mkDrop, updateDrop, burst, mkGuide, updateGuide,
   mkArrow, mkBomb, updateProj, bodyInLava, bodyInWater, tileAt, moveBody,
+  boxClear, unstickBody,
   type Player, type Enemy, type EnemyKind, type Drop, type Particle, type DmgNum, type Body,
   type Guide, type Proj, type PlayerEvents,
 } from './entities';
@@ -198,7 +199,7 @@ export class GameEngine {
   private acc = 0;
   private mounted = false;
   private ro: ResizeObserver | null = null;
-  private noPickup = new Map<number, number>(); // drop 引用暂用 index 标记
+  private noPickup = new Map<Drop, number>(); // 13-c: 掉落物引用 → 拾取冷却帧数(修复旧按数组下标在 splice 后错位的问题)
   private mmImg: ImageData | null = null;
   private mmColors: [number, number, number, number][] = [];
   private mapImg: ImageData | null = null;
@@ -1006,7 +1007,10 @@ export class GameEngine {
     p.deadTimer--;
     this.tickParticles();
     this.dmgs = this.dmgs.filter((d) => --d.life > 0);
-    for (const e of this.enemies) updateEnemy(this.world, e, p.x, p.y, this.isNight(), this.frame);
+    for (const e of this.enemies) {
+      updateEnemy(this.world, e, p.x, p.y, this.isNight(), this.frame);
+      unstickBody(this.world, e);
+    }
     this.enemies = this.enemies.filter((e) => !e.dead && (ENEMY_DEFS[e.kind].boss || Math.hypot(e.x - p.x, e.y - p.y) < 70 * 16));
     if (p.deadTimer <= 0) {
       p.dead = false;
@@ -1046,6 +1050,8 @@ export class GameEngine {
     // ---- 玩家 ----
     const prevVy = p.vy; // 落地冲击速度 ≈ prevVy + 重力(重力在 updatePlayer 内施加)
     const ev = this.devFly ? this.tickPlayerFly() : updatePlayer(this.world, p, this.moveInput(), this.frame);
+    // 13-c: 防卡死安全网(旧档/极端情况嵌进方块时向上冒出, 正常时 no-op)
+    if (unstickBody(this.world, p)) p.fallStart = null;
     if (ev.jumped) SFX.jump();
     if (ev.landed) {
       // 落地尘土:速度越快越多;小跳(vy<1.5)不喷;水中落地不喷(另有水花)
@@ -1110,7 +1116,10 @@ export class GameEngine {
     this.tickEnemies();
 
     // ---- 向导 NPC ----
-    if (this.guide) updateGuide(this.world, this.guide, p.x, this.frame);
+    if (this.guide) {
+      updateGuide(this.world, this.guide, p.x, this.frame);
+      unstickBody(this.world, this.guide);
+    }
 
     // ---- 树苗生长 ----
     this.tickSaplings();
@@ -1706,7 +1715,20 @@ export class GameEngine {
       this.msg('克苏鲁之眼已经在这里了！', '#e07070');
       return;
     }
-    const e = spawnEnemy('eoc', p.x - p.dir * 260, p.y - 240);
+    // 13-c: 找一个无遮挡的召唤位(玩家后方高处优先, 依次尝试偏移), 防止 Boss 卡进地形
+    const bd = ENEMY_DEFS.eoc;
+    const cand: [number, number][] = [
+      [p.x - p.dir * 260, p.y - 240],
+      [p.x + p.dir * 260, p.y - 240],
+      [p.x - p.dir * 340, p.y - 320],
+      [p.x + p.dir * 340, p.y - 320],
+      [p.x, p.y - 360],
+    ];
+    let sx = cand[0][0], sy = cand[0][1];
+    for (const [cx2, cy2] of cand) {
+      if (boxClear(this.world, cx2, cy2, bd.w / 2, bd.h)) { sx = cx2; sy = cy2; break; }
+    }
+    const e = spawnEnemy('eoc', sx, sy);
     this.enemies.push(e);
     this.boss = e;
     this.bossPhaseWas = 0;
@@ -1936,6 +1958,18 @@ export class GameEngine {
     for (const e of this.enemies) {
       updateEnemy(this.world, e, p.x, p.y, night, this.frame);
       const def = ENEMY_DEFS[e.kind];
+      // 13-c: 防卡死安全网 + 长期嵌死敌怪静默移除(10s 仍出不来则消散, 防止"卡死+黑暗中隐形"的僵尸)
+      unstickBody(this.world, e);
+      if (!boxClear(this.world, e.x, e.y, e.w / 2, e.h)) {
+        e.stuck = (e.stuck ?? 0) + 1;
+        if (!def.boss && (e.stuck ?? 0) > 600) {
+          burst(this.parts, e.x, e.y - e.h / 2, '#6a6a8a', 8, 1.6, -0.02);
+          e.dead = true;
+          continue;
+        }
+      } else {
+        e.stuck = 0;
+      }
       // 白天夜怪消散(Boss 豁免 — 由 flee 机制处理)
       if (!night && e.night && !def.boss && Math.random() < 0.012) {
         burst(this.parts, e.x, e.y - e.h / 2, '#6a6a8a', 8, 1.6, -0.02);
@@ -2076,10 +2110,17 @@ export class GameEngine {
       if (def.fly) {
         y = p.y - (12 + Math.random() * 10) * 16;
         if (y < 32) return;
+        // 13-c: 飞行敌怪整身盒须无实心(防在山体/悬崖内出生 → 卡死+黑暗中隐形)
+        if (!boxClear(w, x, y - 1, def.w / 2, def.h)) return;
       } else {
         const sy = w.surface[gx];
-        y = (sy - 1) * 16;
-        if (w.get(gx, sy - 1) !== T.AIR || w.get(gx, sy - 2) !== T.AIR) return;
+        y = sy * 16; // 出生脚底 = 地面顶(spawnEnemy 内部 -1px 悬空)
+        // 13-c: 整身高度所在列须全 AIR(旧检查只查 2 格, 僵尸/骷髅 3 格高会头嵌悬崖/树冠)
+        const topK = Math.ceil(def.h / 16) + 1;
+        for (let k = 1; k <= topK; k++) {
+          if (w.get(gx, sy - k) !== T.AIR) return;
+        }
+        if (!boxClear(w, x, y, def.w / 2, def.h)) return;
       }
     } else {
       // 洞穴/地狱: 在对应层内找合法空腔(地面敌怪需脚下实心; 避开岩浆正上方)
@@ -2094,7 +2135,14 @@ export class GameEngine {
         if (w.isSolid(gx, yy + 1)) { found = yy; break; }
       }
       if (found < 0) return;
-      y = found * 16;
+      if (def.fly) {
+        y = found * 16;
+        // 13-c: 飞行敌怪整身 clearance(蝙蝠/噬魂者可能宽于 1 列)
+        if (!boxClear(w, x, y - 1, def.w / 2, def.h)) return;
+      } else {
+        y = (found + 1) * 16; // 13-c: 直接站上 found+1 实心格顶(旧版出生高 17px 且只查 1 格 → 头嵌顶棚)
+        if (!boxClear(w, x, y, def.w / 2, def.h)) return;
+      }
     }
     this.enemies.push(spawnEnemy(kind, x, y));
   }
@@ -2163,9 +2211,16 @@ export class GameEngine {
     const p = this.player;
     for (let i = this.drops.length - 1; i >= 0; i--) {
       const d = this.drops[i];
+      // 13-c: 掉进岩浆的物品烧毁(原版行为, 防止掉落物永远卡在岩浆里)
+      if (tileAt(this.world, d.x, d.y - 4) === T.LAVA) {
+        this.drops.splice(i, 1);
+        this.noPickup.delete(d);
+        burst(this.parts, d.x, d.y - 4, '#ff8a40', 6, 1.8, 0.02);
+        continue;
+      }
       updateDrop(this.world, d);
-      const noPick = this.noPickup.get(i) ?? 0;
-      if (noPick > 0) { this.noPickup.set(i, noPick - 1); continue; }
+      const noPick = this.noPickup.get(d) ?? 0;
+      if (noPick > 0) { this.noPickup.set(d, noPick - 1); continue; }
       const dist = Math.hypot(p.x - d.x, p.y - p.h / 2 - d.y);
       if (dist < 52 && !p.dead) {
         const s = 0.18 + Math.max(0, (52 - dist) / 52) * 0.2;
@@ -2181,13 +2236,14 @@ export class GameEngine {
         }
         if (rest <= 0) {
           this.drops.splice(i, 1);
-          this.noPickup.delete(i);
+          this.noPickup.delete(d);
         } else {
           d.count = rest;
-          this.noPickup.set(i, 60);
+          this.noPickup.set(d, 60);
         }
       } else if (d.age > 60 * 300) {
         this.drops.splice(i, 1);
+        this.noPickup.delete(d);
       }
     }
   }

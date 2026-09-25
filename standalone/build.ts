@@ -1,7 +1,8 @@
 /**
  * 单文件构建脚本: standalone/main.ts -> public/terraria.html
  * 运行: bun standalone/build.ts
- * 产出零依赖单 HTML(引擎 + DOM UI + 原版素材 base64 全部内联, 双击即玩, 无网络请求)
+ * 产出零依赖单 HTML(引擎 + DOM UI + 原版素材 base64 全部内联, 双击即玩;
+ * 唯一外部请求为 Google Fonts 字体 CSS, 离线时回退系统字体)
  */
 /// <reference types="bun-types" />
 
@@ -12,10 +13,13 @@ const FAVICON = 'data:image/svg+xml,' + encodeURIComponent(
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" fill="#6a4a2e"/><rect y="0" width="16" height="5" fill="#3f8f3a"/><rect x="2" y="1" width="2" height="2" fill="#75c455"/><rect x="9" y="2" width="2" height="2" fill="#75c455"/></svg>',
 );
 
+/** 单文件版附加素材(不在 src/game/assets ASSET_MANIFEST 内: 标题屏 logo / 预留物品图标) */
+const EXTRA_ASSETS: readonly string[] = ['terraria_logo', 'Lesser_Healing_Potion'];
+
 /** 读取 public/assets/ 下清单内 PNG → base64 数据 URI 表(缺失文件跳过) */
 function buildAssetData(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const name of ASSET_MANIFEST) {
+  for (const name of [...ASSET_MANIFEST, ...EXTRA_ASSETS]) {
     const p = `public/assets/${name}.png`;
     if (!existsSync(p)) {
       console.warn(`[build] 素材缺失, 跳过: ${p}`);
@@ -47,6 +51,14 @@ async function main(): Promise<void> {
   const assetData = buildAssetData();
   const assetJs = 'window.__TERRARIA_ASSETS__=' + JSON.stringify(assetData).replace(/<\/script>/gi, '<\\/script>');
   const assetCount = Object.keys(assetData).length;
+  const assetTotal = ASSET_MANIFEST.length + EXTRA_ASSETS.length;
+
+  // 原版 UI 字体(Baloo 2 ≈ Andy Bold + Noto Sans SC 中文回退; display=swap 不阻塞渲染, 离线回退系统字体)
+  const FONT_LINKS = [
+    '<link rel="preconnect" href="https://fonts.googleapis.com">',
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+    '<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@400;700;800&family=Noto+Sans+SC:wght@400;700;900&display=swap" rel="stylesheet">',
+  ].join('\n');
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -56,6 +68,7 @@ async function main(): Promise<void> {
 <meta name="description" content="泰拉瑞亚 Web 复刻 — 单文件零依赖版,原版素材像素沙盒游戏">
 <title>泰拉瑞亚 Web · 单文件版</title>
 <link rel="icon" href="${FAVICON}">
+${FONT_LINKS}
 </head>
 <body>
 <script>
@@ -70,7 +83,7 @@ ${js}
 
   writeFileSync('public/terraria.html', html);
   const kb = (Bun.file('public/terraria.html').size / 1024).toFixed(1);
-  console.log(`OK public/terraria.html (${kb} KB, 内嵌素材 ${assetCount}/${ASSET_MANIFEST.length})`);
+  console.log(`OK public/terraria.html (${kb} KB, 内嵌素材 ${assetCount}/${assetTotal})`);
 }
 
 void main();
