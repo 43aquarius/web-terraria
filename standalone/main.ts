@@ -124,7 +124,8 @@ button{font:inherit}
 
 /* ---- 心形血条(每行 20 颗, 小屏经 max-width 自动 10 颗换行) / 气泡 / 防御 ---- */
 #hearts-wrap{display:flex;flex-direction:column;gap:4px}
-#hearts{display:flex;flex-wrap:wrap;gap:2px;max-width:238px}
+/* 14-a: 窄屏每行 5 颗(max-width 134px) —— 小地图下移到快捷栏下方后, 238px 会撞到小地图左缘 */
+#hearts{display:flex;flex-wrap:wrap;gap:2px;max-width:134px}
 @media(min-width:1024px){#hearts{max-width:none}}
 #hearts.pulse{animation:heartpulse .3s ease-out}
 .heart{position:relative;width:22px;height:22px}
@@ -151,8 +152,9 @@ button{font:inherit}
 #bossbar .num{font-size:11px;font-weight:700;color:#f0e8d8;font-variant-numeric:tabular-nums;
   text-shadow:1px 1px 0 #000}
 
-/* ---- 右上信息(小地图正下方, 原版信息配件风格裸文字)+ 智能光标按钮 ---- */
-#infobar{position:absolute;right:11px;top:128px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:10}
+/* ---- 右上信息(小地图正下方, 原版信息配件风格裸文字)+ 智能光标按钮 ----
+   14-a: 窄屏小地图下移到 y=50(高110) → 信息条 top:170; ≥768px 小地图 y=12(高168) → top:186 */
+#infobar{position:absolute;right:11px;top:170px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:10}
 @media(min-width:768px){#infobar{top:186px}}
 #infobar .info{text-align:right;font-size:11px;line-height:1.625;color:#f0e8d8;text-shadow:1px 1px 0 #000}
 #infobar .depth{font-variant-numeric:tabular-nums}

@@ -126,13 +126,17 @@ export function computeLight(
   }
 
   // ---- 写入画布(暗度 alpha) ----
+  // 14-a: 暗度封顶 0.72 —— 无光洞穴不再全黑(参考站无逐格黑暗系统, 全程可见;
+  // 原版全黑会导致玩家"看不见自己/像消失", 折中: 保留光照氛围但保底 28% 可见度)
   if (!reg.img) reg.img = reg.ctx.createImageData(w, h);
   const data = reg.img.data;
+  const DARK_CAP = 0.72;
   for (let i = 0; i < w * h; i++) {
     const l = light[i];
     let a = 1 - l;
     if (a < 0) a = 0;
     a = Math.pow(a, 1.25);
+    if (a > DARK_CAP) a = DARK_CAP;
     const p = i * 4;
     data[p] = 5; data[p + 1] = 6; data[p + 2] = 12;
     data[p + 3] = (a * 255) | 0;

@@ -230,9 +230,11 @@ function Hearts({ hp, maxHp, tex }: { hp: number; maxHp: number; tex: GameTextur
   const n = Math.max(1, Math.ceil(maxHp / 10))
   return (
     // key 变化时整块重挂载 -> 血量变化重放轻微缩放动画
+    // 14-a: 窄屏每行 5 颗(max-w 134px) —— 手机上小地图下移到快捷栏下方后,
+    // 心形第一行若仍到 ~222px 会撞到小地图左缘(208px)
     <div
       key={hp}
-      className="hud-heart-pulse flex max-w-[238px] flex-wrap gap-[2px] lg:max-w-none"
+      className="hud-heart-pulse flex max-w-[134px] flex-wrap gap-[2px] lg:max-w-none"
     >
       {Array.from({ length: n }, (_, i) => {
         const v = hp - i * 10
@@ -675,8 +677,9 @@ export default function HUD() {
         </div>
       </div>
 
-      {/* ---- 右上:信息(小地图 256x168 正下方, 原版信息配件风格:裸文字白字黑描边)+ 智能光标 ---- */}
-      <div className="absolute right-[11px] top-[128px] z-10 flex flex-col items-end gap-1.5 md:top-[186px]">
+      {/* ---- 右上:信息(小地图正下方, 原版信息配件风格:裸文字白字黑描边)+ 智能光标 ----
+          14-a: 窄屏小地图下移到 y=50(高110) → 信息条跟到 top-170; 桌面小地图 y=12(高168) → top-186 */}
+      <div className="absolute right-[11px] top-[170px] z-10 flex flex-col items-end gap-1.5 md:top-[186px]">
         <div className="text-right text-[11px] leading-relaxed text-[#f0e8d8] [text-shadow:1px_1px_0_#000]">
           <div>{st.biomeName}</div>
           <div className="tabular-nums">{st.depth >= 0 ? `${st.depth} 米` : '地表上'}</div>

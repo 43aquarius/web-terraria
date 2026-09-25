@@ -3466,12 +3466,15 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     if (!reg.img)
       reg.img = reg.ctx.createImageData(w, h);
     const data = reg.img.data;
+    const DARK_CAP = 0.72;
     for (let i = 0;i < w * h; i++) {
       const l = light[i];
       let a = 1 - l;
       if (a < 0)
         a = 0;
       a = Math.pow(a, 1.25);
+      if (a > DARK_CAP)
+        a = DARK_CAP;
       const p = i * 4;
       data[p] = 5;
       data[p + 1] = 6;
@@ -6180,19 +6183,19 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     return TILE_FAMILY[id] ?? id;
   }
   var LAYOUT = {
-    player: { fw: 20, fh: 30, frames: 19, drawW: 40, drawH: 60 },
-    zombie: { fw: 34, fh: 46, frames: 3, drawW: 40, drawH: 60 },
-    skeleton: { fw: 60, fh: 48, frames: 7, drawW: 40, drawH: 60, offX: -5 },
-    guide: { frames: [[0, 26], [29, 30], [66, 28], [97, 32], [130, 32], [163, 32], [198, 30], [231, 28], [264, 28], [297, 28], [330, 26], [363, 24], [396, 24], [429, 26], [462, 28]], drawW: 40, drawH: 60, offX: 5 },
-    slime: { fw: 32, fh: 24, frames: 2, drawW: 40, drawH: 30 },
-    eye: { fw: 37, fh: 22, frames: 2, drawW: 40, drawH: 30 },
-    bat: { fw: 28, fh: 24, frames: 4, drawW: 30, drawH: 20 },
-    eos: { fw: 42, fh: 78, frames: 2, drawW: 40, drawH: 40 },
-    eoc1: { drawW: 80, drawH: 80 },
-    eoc2: { drawW: 80, drawH: 80 },
-    eowHead: { drawW: 60, drawH: 60 },
-    eowBody: { drawW: 60, drawH: 60 },
-    eowTail: { drawW: 60, drawH: 60 },
+    player: { fw: 20, fh: 30, frames: 19, drawW: 32, drawH: 48 },
+    zombie: { fw: 34, fh: 46, frames: 3, drawW: 32, drawH: 48 },
+    skeleton: { fw: 60, fh: 48, frames: 7, drawW: 32, drawH: 48, offX: 0 },
+    guide: { frames: [[0, 26], [29, 30], [66, 28], [97, 32], [130, 32], [163, 32], [198, 30], [231, 28], [264, 28], [297, 28], [330, 26], [363, 24], [396, 24], [429, 26], [462, 28]], drawW: 32, drawH: 48, offX: 0 },
+    slime: { fw: 32, fh: 24, frames: 2, drawW: 32, drawH: 24 },
+    eye: { fw: 37, fh: 22, frames: 2, drawW: 32, drawH: 24 },
+    bat: { fw: 28, fh: 24, frames: 4, drawW: 24, drawH: 16 },
+    eos: { fw: 42, fh: 78, frames: 2, drawW: 32, drawH: 32 },
+    eoc1: { drawW: 64, drawH: 64 },
+    eoc2: { drawW: 64, drawH: 64 },
+    eowHead: { drawW: 48, drawH: 48 },
+    eowBody: { drawW: 48, drawH: 48 },
+    eowTail: { drawW: 48, drawH: 48 },
     tree: { srcW: 76, srcH: 142 }
   };
   var TILESET_PNG = [
@@ -6464,16 +6467,18 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
   }
   function blit(ctx, img, sx, sw, sh, x, y, dw, dh, facing, flash) {
     ctx.save();
+    let dy = y;
     if (facing === 1) {
       ctx.translate(x + dw, y);
       ctx.scale(-1, 1);
       x = 0;
+      dy = 0;
     }
-    ctx.drawImage(img, sx, 0, sw, sh, x, y, dw, dh);
+    ctx.drawImage(img, sx, 0, sw, sh, x, dy, dw, dh);
     if (flash) {
       ctx.globalCompositeOperation = "lighter";
       ctx.globalAlpha = 0.75;
-      ctx.drawImage(img, sx, 0, sw, sh, x, y, dw, dh);
+      ctx.drawImage(img, sx, 0, sw, sh, x, dy, dw, dh);
     }
     ctx.restore();
   }
@@ -6499,7 +6504,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     tintCache.set(key, c);
     return c;
   }
-  function drawImgPlayer(ctx, x, y, frame, facing, walkT, onGround, vy, swingT, armor, heldIcon, flash) {
+  function drawImgPlayer(ctx, x, y, frame, facing, walkT, onGround, vy, swingT, armor, flash) {
     const A = store();
     if (!A.ready)
       return false;
@@ -6508,20 +6513,24 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       return false;
     const L = LAYOUT.player;
     let f = 0;
-    if (swingT > 0 && swingT <= 1)
+    if (frame >= 0 && frame <= 18) {
+      f = frame;
+    } else if (swingT > 0 && swingT <= 1) {
       f = Math.min(4, Math.max(1, 1 + Math.floor(swingT * 4)));
-    else if (!onGround)
+    } else if (!onGround) {
       f = 5;
-    else if (Math.abs(walkT) > 0.001 || frame >= 6 && frame <= 18)
-      f = 6 + mod(Math.floor(walkT), 13);
+    } else {
+      f = 6 + mod(Math.floor(walkT * 13 / (Math.PI * 2)), 13);
+    }
     ctx.save();
-    let bx = x;
+    let bx = x, by = y;
     if (facing === 1) {
       ctx.translate(x + L.drawW, y);
       ctx.scale(-1, 1);
       bx = 0;
+      by = 0;
     }
-    ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, y, L.drawW, L.drawH);
+    ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, by, L.drawW, L.drawH);
     if (armor) {
       for (const part of [armor.head, armor.body, armor.legs]) {
         if (!part)
@@ -6534,29 +6543,15 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
           continue;
         const ah = L.drawH;
         const aw = ah * (sw / sh);
-        ctx.drawImage(im, 0, 0, sw, sh, bx + (L.drawW - aw) / 2, y, aw, ah);
+        ctx.drawImage(im, 0, 0, sw, sh, bx + (L.drawW - aw) / 2, by, aw, ah);
       }
     }
     if (flash) {
       ctx.globalCompositeOperation = "lighter";
       ctx.globalAlpha = 0.75;
-      ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, y, L.drawW, L.drawH);
+      ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, by, L.drawW, L.drawH);
     }
     ctx.restore();
-    if (heldIcon) {
-      const ic = A.img(heldIcon);
-      if (ic) {
-        const sw = srcW(ic), sh = srcH(ic);
-        if (sw && sh) {
-          const deg = swingT > 0 && swingT <= 1 ? -30 + 90 * swingT : 0;
-          ctx.save();
-          ctx.translate(x + facing * 10, y + 24);
-          ctx.rotate(deg * Math.PI / 180 * facing);
-          ctx.drawImage(ic, 0, 0, sw, sh, -7, -7, 14, 14);
-          ctx.restore();
-        }
-      }
-    }
     return true;
   }
   function drawImgZombie(ctx, x, y, walkT, facing, flash) {
@@ -6593,9 +6588,9 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     if (sitting)
       f = 14;
     else if (Math.abs(walkT) > 0.001)
-      f = 1 + mod(Math.floor(walkT), 13);
+      f = 1 + mod(Math.floor(walkT * 13 / (Math.PI * 2)), 13);
     const fr = L.frames[f] ?? [0, 26];
-    blit(ctx, img, fr[0], fr[1], 48, x - L.offX, y, L.drawW, L.drawH, facing, false);
+    blit(ctx, img, fr[0], fr[1], 48, x, y, L.drawW, L.drawH, facing, false);
     return true;
   }
   function drawImgSlime(ctx, kind, x, y, walkT, facing, flash, t) {
@@ -6900,13 +6895,13 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
   }
   var itemIconsApplied = false;
   var IMG_OFF = {
-    player: [-20, -60],
-    humanoid: [-20, -60],
-    slime: [-20, -30],
-    eye: [-20, -30],
-    bat: [-15, -20],
-    eos: [-20, -40],
-    eoc: [-40, -80]
+    player: [-16, -48],
+    humanoid: [-16, -48],
+    slime: [-16, -24],
+    eye: [-16, -24],
+    bat: [-12, -16],
+    eos: [-16, -32],
+    eoc: [-32, -64]
   };
   var ARMOR_IMG = {
     [IT.COPPER_HELM]: ["copper_helmet_ingame", "copper_chainmail_ingame", "copper_greaves_ingame"],
@@ -7299,7 +7294,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     else
       drawForestBackdrop(g, ctx, W, H);
     ctx.save();
-    ctx.scale(g.zoom * g.dpr, g.zoom * g.dpr);
+    ctx.scale(g.zoom, g.zoom);
     ctx.translate(-Math.round((g.camX + g.shakeX) * 2) / 2, -Math.round((g.camY + g.shakeY) * 2) / 2);
     ctx.imageSmoothingEnabled = false;
     const x0 = Math.max(0, Math.floor(g.camX / 16) - 1);
@@ -7812,18 +7807,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
         }
         let drew = false;
         if (useAssets) {
-          drew = drawImgPlayer(ctx, p.x + IMG_OFF.player[0], p.y + IMG_OFF.player[1], playerImgFrame(p), p.dir, p.walkT, p.onGround, p.vy, p.swing ? p.swing.t / p.swing.dur : 0, armorImgsOf(p.armor), null, false);
-          if (drew && p.swing) {
-            const icon = tex.icons[p.swing.itemId];
-            if (icon) {
-              const ease2 = 1 - Math.pow(1 - p.swing.t / p.swing.dur, 2);
-              ctx.save();
-              ctx.translate(p.x + p.dir * 6, p.y - 14);
-              ctx.rotate((-2.05 + ease2 * 2.9) * p.dir);
-              ctx.drawImage(icon, -7, -7, 14, 14);
-              ctx.restore();
-            }
-          }
+          drew = drawImgPlayer(ctx, p.x + IMG_OFF.player[0], p.y + IMG_OFF.player[1], playerImgFrame(p), p.dir, p.walkT, p.onGround, p.vy, p.swing ? p.swing.t / p.swing.dur : 0, armorImgsOf(p.armor), false);
         }
         if (!drew) {
           drawHumanoid(ctx, PLAYER_PALETTE, {
@@ -7837,6 +7821,24 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
             flash: false,
             armor: armorColorsOf(p.armor)
           });
+        }
+        if (drew) {
+          const held = p.inv[p.hotbar];
+          const icon = held ? tex.icons[held.id] : null;
+          if (icon) {
+            const spriteL = p.x + IMG_OFF.player[0];
+            const spriteT = p.y + IMG_OFF.player[1];
+            const px2 = spriteL + (p.dir === 1 ? 0.7 : 0.3) * LAYOUT.player.drawW;
+            const py = spriteT + 0.4 * LAYOUT.player.drawH;
+            const t = p.swing ? p.swing.t / p.swing.dur : 0;
+            const rot = p.swing ? p.dir * (-0.36 + 0.96 * t) : 0;
+            const s = 11.2;
+            ctx.save();
+            ctx.translate(px2, py);
+            ctx.rotate(rot);
+            ctx.drawImage(icon, -s / 2, -s / 2, s, s);
+            ctx.restore();
+          }
         }
       }
     }
@@ -7889,13 +7891,11 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     const extra = [];
     if (showPlayer) {
       const held = g.player.inv[g.player.hotbar];
-      if (held && held.id === IT.TORCH) {
-        extra.push({
-          x: Math.floor(g.player.x / 16),
-          y: Math.floor((g.player.y - g.player.h / 2) / 16),
-          v: 0.95
-        });
-      }
+      extra.push({
+        x: Math.floor(g.player.x / 16),
+        y: Math.floor((g.player.y - g.player.h / 2) / 16),
+        v: held && held.id === IT.TORCH ? 0.95 : 0.62
+      });
     }
     const region = g.computeLightFor(extra);
     ctx.imageSmoothingEnabled = true;
@@ -7998,7 +7998,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, W, H);
     }
-    if (g.screen !== "title" && !g.mapOpen) {
+    if (g.screen !== "title" && !g.mapOpen && !(g.invOpen && W < 768)) {
       drawMinimap(g, ctx, W);
     }
     if (g.mapOpen) {
@@ -8010,7 +8010,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       return;
     const small = W < 768;
     const mw = small ? 168 : 256, mh = small ? 110 : 168;
-    const mx = W - mw - 14, my = 12;
+    const mx = W - mw - 14, my = small ? 50 : 12;
     ctx.fillStyle = "rgba(8,10,20,0.55)";
     ctx.fillRect(mx - 3, my - 3, mw + 6, mh + 6);
     ctx.strokeStyle = "rgba(120,140,220,0.8)";
@@ -8283,7 +8283,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     stationCache = { workbench: false, furnace: false, anvil: false, altar: false };
     stationFrame = -999;
     pickupAgg = new Map;
-    msgSeq = 1;
+    msgSeq = Date.now() % 1e6 * 10;
     uiDirty = true;
     lastUiHp = -1;
     raf = 0;
@@ -8366,7 +8366,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       this.ctx.imageSmoothingEnabled = false;
       if (moved && p) {
         this.camX = p.x - this.viewW() / 2;
-        this.camY = p.y - this.viewH() * 0.62;
+        this.camY = p.y - p.h / 2 - this.viewH() / 2;
         this.clampCam();
       }
     }
@@ -8428,7 +8428,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       this.buildMapCanvas();
       this.markExplored(Math.floor(world.spawnX / 16), Math.floor(world.spawnY / 16));
       this.camX = world.spawnX - this.viewW() / 2;
-      this.camY = this.surfaceYpx() - this.viewH() * 0.72;
+      this.camY = this.player.y - this.player.h / 2 - this.viewH() / 2;
       this.clampCam();
       this.uiDirty = true;
       this.syncUI(true);
@@ -8736,7 +8736,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       this.buildMinimap();
       this.buildMapCanvas();
       this.camX = this.player.x - this.viewW() / 2;
-      this.camY = this.player.y - this.viewH() * 0.6;
+      this.camY = this.player.y - this.player.h / 2 - this.viewH() / 2;
       this.clampCam();
       this.wasNight = this.isNight();
       Music.setScene(this.wasNight ? "night" : "day");
@@ -9229,6 +9229,20 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
       }
       if (this.mouse.left && !this.invOpen && !this.mapOpen)
         this.useHeld();
+      if (!this.mouse.left)
+        this.mineTarget = null;
+      if (this.frame % 6 === 0 && this.mineDamage.size > 0) {
+        const cur = this.mineTarget;
+        for (const [idx, dmg] of this.mineDamage) {
+          if (idx === cur && this.mouse.left)
+            continue;
+          const nd = dmg * 0.86;
+          if (nd < 0.5)
+            this.mineDamage.delete(idx);
+          else
+            this.mineDamage.set(idx, nd);
+        }
+      }
       if (this.mouse.right && !this.rightWas && !this.invOpen && !this.mapOpen)
         this.interactRight();
       this.rightWas = this.mouse.right;
@@ -9291,10 +9305,10 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
     followCam() {
       const p = this.player;
       const tx = p.x - this.viewW() / 2;
-      const ty = p.y - this.viewH() * 0.62;
+      const ty = p.y - p.h / 2 - this.viewH() / 2;
       const outX = Math.abs(p.x - (this.camX + this.viewW() / 2)) > this.viewW() * 0.5;
-      const outY = Math.abs(p.y - (this.camY + this.viewH() * 0.62)) > this.viewH() * 0.5;
-      const k = outX || outY ? 1 : 0.14;
+      const outY = Math.abs(p.y - p.h / 2 - (this.camY + this.viewH() / 2)) > this.viewH() * 0.5;
+      const k = outX || outY ? 1 : 0.15;
       this.camX += (tx - this.camX) * k;
       this.camY += (ty - this.camY) * k;
       this.clampCam();
@@ -9471,6 +9485,8 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
         return;
       }
       if (this.mineTarget !== idx) {
+        if (this.mineTarget !== null)
+          this.mineDamage.delete(this.mineTarget);
         this.mineTarget = idx;
       }
       let power = def?.power ?? 3;
@@ -10146,7 +10162,7 @@ window.__TERRARIA_ASSETS__={"dirt_tile_set":"data:image/png;base64,iVBORw0KGgoAA
         if (e.mode === "flee")
           continue;
         if (!p.dead && p.iframes <= 0 && p.spawnProt <= 0) {
-          if (Math.abs(e.x - p.x) < e.w / 2 + p.w / 2 && e.y > p.y - p.h - e.h / 2 && e.y - e.h < p.y + e.h / 2) {
+          if (Math.abs(e.x - p.x) < (e.w + p.w) / 2 && e.y > p.y - p.h && e.y - e.h < p.y) {
             const dmg = Math.max(1, Math.round(e.dmg * (0.9 + Math.random() * 0.2)));
             this.hurtPlayer(dmg, e.x > p.x ? -1 : 1, false);
           }
@@ -10760,7 +10776,8 @@ button{font:inherit}
 
 /* ---- 心形血条(每行 20 颗, 小屏经 max-width 自动 10 颗换行) / 气泡 / 防御 ---- */
 #hearts-wrap{display:flex;flex-direction:column;gap:4px}
-#hearts{display:flex;flex-wrap:wrap;gap:2px;max-width:238px}
+/* 14-a: 窄屏每行 5 颗(max-width 134px) —— 小地图下移到快捷栏下方后, 238px 会撞到小地图左缘 */
+#hearts{display:flex;flex-wrap:wrap;gap:2px;max-width:134px}
 @media(min-width:1024px){#hearts{max-width:none}}
 #hearts.pulse{animation:heartpulse .3s ease-out}
 .heart{position:relative;width:22px;height:22px}
@@ -10787,8 +10804,9 @@ button{font:inherit}
 #bossbar .num{font-size:11px;font-weight:700;color:#f0e8d8;font-variant-numeric:tabular-nums;
   text-shadow:1px 1px 0 #000}
 
-/* ---- 右上信息(小地图正下方, 原版信息配件风格裸文字)+ 智能光标按钮 ---- */
-#infobar{position:absolute;right:11px;top:128px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:10}
+/* ---- 右上信息(小地图正下方, 原版信息配件风格裸文字)+ 智能光标按钮 ----
+   14-a: 窄屏小地图下移到 y=50(高110) → 信息条 top:170; ≥768px 小地图 y=12(高168) → top:186 */
+#infobar{position:absolute;right:11px;top:170px;display:flex;flex-direction:column;align-items:flex-end;gap:6px;z-index:10}
 @media(min-width:768px){#infobar{top:186px}}
 #infobar .info{text-align:right;font-size:11px;line-height:1.625;color:#f0e8d8;text-shadow:1px 1px 0 #000}
 #infobar .depth{font-variant-numeric:tabular-nums}

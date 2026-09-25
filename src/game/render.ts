@@ -13,7 +13,7 @@ import {
   SLIME_GREEN, SLIME_BLUE, LAVA_SLIME,
 } from './sprites';
 import {
-  getAssets, loadAssets, TILE_SHEET, tileFamily, frameFor,
+  getAssets, loadAssets, TILE_SHEET, tileFamily, frameFor, LAYOUT,
   drawImgPlayer, drawImgZombie, drawImgSkeleton, drawImgGuide, drawImgSlime, drawImgEye,
   drawImgBat, drawImgEos, drawImgEoC, drawTreeSprite, drawTallGrass, drawImgTorch, applyItemIcons,
   type Assets,
@@ -62,13 +62,13 @@ let itemIconsApplied = false;
  * 若 12-a 实现的锚点语义不同, 只需统一调整本表。
  */
 const IMG_OFF = {
-  player: [-20, -60],     // 40x60
-  humanoid: [-20, -60],   // 僵尸/骷髅/向导 40x60
-  slime: [-20, -30],      // 史莱姆 40x30
-  eye: [-20, -30],        // 恶魔眼 40x30
-  bat: [-15, -20],        // 蝙蝠 30x20
-  eos: [-20, -40],        // 吞噬者 40x40
-  eoc: [-40, -80],        // 克苏鲁之眼 80x80
+  player: [-16, -48],    // 32x48 (14-a 参考站比例: 玩家绘 2x3 格)
+  humanoid: [-16, -48],  // 僵尸/骷髅/向导 32x48
+  slime: [-16, -24],     // 史莱姆 32x24
+  eye: [-16, -24],       // 恶魔眼 32x24
+  bat: [-12, -16],       // 蝙蝠 24x16
+  eos: [-16, -32],       // 吞噬者 32x32
+  eoc: [-32, -64],       // 克苏鲁之眼 64x64
 } as const;
 
 /** 盔甲套装(以头盔 id 为 key, 同 armorColorsOf 的 +offset 规则) → 原版 ingame 贴图三件套名 */
@@ -510,8 +510,11 @@ export function renderGame(g: GameEngine): void {
   else drawForestBackdrop(g, ctx, W, H);
 
   // ---- 世界空间 ----
+  // 14-a 关键修复: 基础变换已是 dpr(506 行 setTransform), 这里只需再乘 zoom。
+  // 旧代码 zoom*dpr 会把世界放大 dpr² 倍 —— 手机/retina(dpr≥2)上视野只剩一半,
+  // 玩家(相机按 vw/zoom 计算)随之"不在画面中心/跑出画面/消失"。
   ctx.save();
-  ctx.scale(g.zoom * g.dpr, g.zoom * g.dpr);
+  ctx.scale(g.zoom, g.zoom);
   // 屏幕震动: 相机偏移(世界像素, zoom 后即屏幕抖动); cull 范围外扩 1 格防止抖动露出边缘空隙
   ctx.translate(
     -Math.round((g.camX + g.shakeX) * 2) / 2,
@@ -1034,7 +1037,7 @@ export function renderGame(g: GameEngine): void {
     }
   }
 
-  // ---- 玩家(原版精灵优先; 盔甲三槽按套装映射 ingame 贴图) ----
+  // ---- 玩家(原版精灵优先; 盔甲三槽按套装映射 ingame 贴图; 手持物品贴手部锚点常显) ----
   if (showPlayer) {
     const p = g.player;
     const blink = p.iframes > 0 && (g.frame % 6) < 3;
@@ -1051,31 +1054,39 @@ export function renderGame(g: GameEngine): void {
       }
       let drew = false;
       if (useAssets) {
-        // 帧号按参考站编号(0站/1-4挥/5跳/6-18走); heldIcon 传 null,
-        // 挥舞物品由下方手动叠绘(tex.icons 已被 applyItemIcons 换成原版 PNG)
         drew = drawImgPlayer(
           ctx, p.x + IMG_OFF.player[0], p.y + IMG_OFF.player[1],
           playerImgFrame(p), p.dir, p.walkT, p.onGround, p.vy,
           p.swing ? p.swing.t / p.swing.dur : 0,
-          armorImgsOf(p.armor), null, false,
+          armorImgsOf(p.armor), false,
         );
-        if (drew && p.swing) {
-          const icon = tex.icons[p.swing.itemId];
-          if (icon) {
-            const ease2 = 1 - Math.pow(1 - p.swing.t / p.swing.dur, 2);
-            ctx.save();
-            ctx.translate(p.x + p.dir * 6, p.y - 14);
-            ctx.rotate((-2.05 + ease2 * 2.9) * p.dir);
-            ctx.drawImage(icon, -7, -7, 14, 14);
-            ctx.restore();
-          }
-        }
       }
       if (!drew) {
         drawHumanoid(ctx, PLAYER_PALETTE, {
           x: p.x, y: p.y, dir: p.dir, walkT: p.walkT, onGround: p.onGround, vy: p.vy,
           swing, flash: false, armor: armorColorsOf(p.armor),
         });
+      }
+      // 14-a: 手持物品常显 + 参考站手部锚点(修复"与人物图层分离")。
+      // 参考站: 锚点 = 精灵左上 + (朝右 0.7 / 朝左 0.3)×宽, 顶部 + 0.4×高;
+      // 挥击时旋转 rot = dir × (-0.36 + 0.96·t)(线性); 尺寸 0.7 格 = 11.2 世界px。
+      if (drew) {
+        const held = p.inv[p.hotbar];
+        const icon = held ? tex.icons[held.id] : null;
+        if (icon) {
+          const spriteL = p.x + IMG_OFF.player[0];
+          const spriteT = p.y + IMG_OFF.player[1];
+          const px = spriteL + (p.dir === 1 ? 0.7 : 0.3) * LAYOUT.player.drawW;
+          const py = spriteT + 0.4 * LAYOUT.player.drawH;
+          const t = p.swing ? p.swing.t / p.swing.dur : 0;
+          const rot = p.swing ? p.dir * (-0.36 + 0.96 * t) : 0;
+          const s = 11.2;
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.rotate(rot);
+          ctx.drawImage(icon, -s / 2, -s / 2, s, s);
+          ctx.restore();
+        }
       }
     }
   }
@@ -1132,16 +1143,16 @@ export function renderGame(g: GameEngine): void {
   }
 
   // ---- 光照罩(平滑放大) ----
+  // 14-a: 玩家自带环境光(0.62) —— 黑暗洞穴里人物与身边数格始终清晰可见,
+  // 彻底解决"人物消失"; 手持火把时仍用更强的 0.95(更大照明范围)。
   const extra: ExtraLight[] = [];
   if (showPlayer) {
     const held = g.player.inv[g.player.hotbar];
-    if (held && held.id === IT.TORCH) {
-      extra.push({
-        x: Math.floor(g.player.x / 16),
-        y: Math.floor((g.player.y - g.player.h / 2) / 16),
-        v: 0.95,
-      });
-    }
+    extra.push({
+      x: Math.floor(g.player.x / 16),
+      y: Math.floor((g.player.y - g.player.h / 2) / 16),
+      v: held && held.id === IT.TORCH ? 0.95 : 0.62,
+    });
   }
   const region = g.computeLightFor(extra);
   ctx.imageSmoothingEnabled = true;
@@ -1264,8 +1275,9 @@ export function renderGame(g: GameEngine): void {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // ---- 小地图(仅游戏中, 全屏地图打开时被整体覆盖, 跳过省事) ----
-  if (g.screen !== 'title' && !g.mapOpen) {
+  // ---- 小地图(仅游戏中, 全屏地图打开时被整体覆盖, 跳过省事;
+  //      14-a: 窄屏背包打开时也跳过 —— 背包面板会向上伸到右上角与小地图重叠) ----
+  if (g.screen !== 'title' && !g.mapOpen && !(g.invOpen && W < 768)) {
     drawMinimap(g, ctx, W);
   }
 
@@ -1277,10 +1289,11 @@ export function renderGame(g: GameEngine): void {
 
 function drawMinimap(g: GameEngine, ctx: CanvasRenderingContext2D, W: number): void {
   if (!g.mmCanvas) return;
-  // 13-c: 窄屏缩小小地图(<768px 用 0.66 倍, 与 HUD md: 断点一致), 避免压到左上快捷栏
+  // 13-c/14-a: 窄屏(<768px)小地图 168x110, 且下移到 y=50 —— 手机上快捷栏占满整行宽,
+  // 顶部再放小地图会盖住快捷栏第 7-10 格(实测重叠); 桌面维持 256x168 @ y=12
   const small = W < 768;
   const mw = small ? 168 : 256, mh = small ? 110 : 168;
-  const mx = W - mw - 14, my = 12;
+  const mx = W - mw - 14, my = small ? 50 : 12;
   ctx.fillStyle = 'rgba(8,10,20,0.55)';
   ctx.fillRect(mx - 3, my - 3, mw + 6, mh + 6);
   ctx.strokeStyle = 'rgba(120,140,220,0.8)';

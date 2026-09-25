@@ -85,20 +85,23 @@ export function tileFamily(id: number): number {
 }
 
 // ==================== 精灵表布局常量(参考站提取) ====================
+// 14-a 尺寸勘误: 参考站瓦片 32px、玩家绘 64x96(=2x3 格) —— 我方瓦片 16px,
+// 全部精灵应取参考站一半(玩家/僵尸/骷髅/向导 32x48, 史莱姆/魔眼 32x24, 蝙蝠 24x16,
+// 噬魂者 32x32, EoC 64x64)。旧版统一画大了 25%, 与世界比例失调。
 export const LAYOUT = {
-  player: { fw: 20, fh: 30, frames: 19, drawW: 40, drawH: 60 },       // 帧宽20x30, 绘制40x60世界px(玩家2x3格)
-  zombie: { fw: 34, fh: 46, frames: 3, drawW: 40, drawH: 60 },
-  skeleton: { fw: 60, fh: 48, frames: 7, drawW: 40, drawH: 60, offX: -5 },
-  guide: { frames: [[0,26],[29,30],[66,28],[97,32],[130,32],[163,32],[198,30],[231,28],[264,28],[297,28],[330,26],[363,24],[396,24],[429,26],[462,28]] as [number,number][], drawW: 40, drawH: 60, offX: 5 },
-  slime: { fw: 32, fh: 24, frames: 2, drawW: 40, drawH: 30 },
-  eye: { fw: 37, fh: 22, frames: 2, drawW: 40, drawH: 30 },
-  bat: { fw: 28, fh: 24, frames: 4, drawW: 30, drawH: 20 },
-  eos: { fw: 42, fh: 78, frames: 2, drawW: 40, drawH: 40 },
-  eoc1: { drawW: 80, drawH: 80 },
-  eoc2: { drawW: 80, drawH: 80 },
-  eowHead: { drawW: 60, drawH: 60 },
-  eowBody: { drawW: 60, drawH: 60 },
-  eowTail: { drawW: 60, drawH: 60 },
+  player: { fw: 20, fh: 30, frames: 19, drawW: 32, drawH: 48 },       // 帧宽20x30, 绘制32x48世界px(玩家2x3格)
+  zombie: { fw: 34, fh: 46, frames: 3, drawW: 32, drawH: 48 },
+  skeleton: { fw: 60, fh: 48, frames: 7, drawW: 32, drawH: 48, offX: 0 },
+  guide: { frames: [[0,26],[29,30],[66,28],[97,32],[130,32],[163,32],[198,30],[231,28],[264,28],[297,28],[330,26],[363,24],[396,24],[429,26],[462,28]] as [number,number][], drawW: 32, drawH: 48, offX: 0 },
+  slime: { fw: 32, fh: 24, frames: 2, drawW: 32, drawH: 24 },
+  eye: { fw: 37, fh: 22, frames: 2, drawW: 32, drawH: 24 },
+  bat: { fw: 28, fh: 24, frames: 4, drawW: 24, drawH: 16 },
+  eos: { fw: 42, fh: 78, frames: 2, drawW: 32, drawH: 32 },
+  eoc1: { drawW: 64, drawH: 64 },
+  eoc2: { drawW: 64, drawH: 64 },
+  eowHead: { drawW: 48, drawH: 48 },
+  eowBody: { drawW: 48, drawH: 48 },
+  eowTail: { drawW: 48, drawH: 48 },
   tree: { srcW: 76, srcH: 142 },                                       // 按树高拉伸
 } as const;
 
@@ -284,20 +287,24 @@ function srcW(img: Img): number { return (img as HTMLImageElement).naturalWidth 
 function srcH(img: Img): number { return (img as HTMLImageElement).naturalHeight || img.height; }
 function mod(n: number, m: number): number { return ((n % m) + m) % m; }
 
-/** 通用镜像+受击白闪帧绘制(facing=1 朝右 → 水平翻转; 素材默认朝左) */
+/** 通用镜像+受击白闪帧绘制(facing=1 朝右 → 水平翻转; 素材默认朝左)
+ *  14-a 关键修复: 镜像分支的 translate 已包含 y 平移, 目标矩形 y 必须用 0 ——
+ *  旧代码重复用 y, 导致所有朝右的实体被画到 2y(远出屏外) = "人物/怪物时不时消失"的真正根因 */
 function blit(ctx: CanvasRenderingContext2D, img: Img, sx: number, sw: number, sh: number,
   x: number, y: number, dw: number, dh: number, facing: number, flash: boolean): void {
   ctx.save();
+  let dy = y;
   if (facing === 1) {
     ctx.translate(x + dw, y);
     ctx.scale(-1, 1);
     x = 0;
+    dy = 0;
   }
-  ctx.drawImage(img, sx, 0, sw, sh, x, y, dw, dh);
+  ctx.drawImage(img, sx, 0, sw, sh, x, dy, dw, dh);
   if (flash) {
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.75;
-    ctx.drawImage(img, sx, 0, sw, sh, x, y, dw, dh);
+    ctx.drawImage(img, sx, 0, sw, sh, x, dy, dw, dh);
   }
   ctx.restore();
 }
@@ -323,21 +330,30 @@ function tinted(img: Img, name: string, color: string): Img {
 }
 
 /** 玩家: frame 参考站编号(0站/1-4挥击/5跳跃/6-18走路13帧); armor 传 ingame 贴图三件套名 */
-export function drawImgPlayer(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, facing: number, walkT: number, onGround: boolean, vy: number, swingT: number, armor: { head: string | null; body: string | null; legs: string | null } | null, heldIcon: string | null, flash: boolean): boolean {
+export function drawImgPlayer(ctx: CanvasRenderingContext2D, x: number, y: number, frame: number, facing: number, walkT: number, onGround: boolean, vy: number, swingT: number, armor: { head: string | null; body: string | null; legs: string | null } | null, flash: boolean): boolean {
   const A = store(); if (!A.ready) return false;
   const img = A.img('player_spritesheet'); if (!img) return false;
   const L = LAYOUT.player;
-  // 帧选择(参考站): 挥击(swingT∈(0,1] 为挥舞进度) > 跳跃 > 走路 > 站立。
-  // 行走判定: 引擎 walkT(站立时归零)>0, 或调用方以参考站编号 6..18 提示。
+  // 14-a 帧选择: 优先信调用方算好的参考站帧号(render.ts playerImgFrame);
+  // frame<0 时自行推算。旧版把 walkT(弧度相位)直接 floor 当帧号, 走路只在
+  // 6..12 七帧间跳, 动画错误。
   let f = 0;
-  if (swingT > 0 && swingT <= 1) f = Math.min(4, Math.max(1, 1 + Math.floor(swingT * 4)));
-  else if (!onGround) f = 5;
-  else if (Math.abs(walkT) > 0.001 || (frame >= 6 && frame <= 18)) f = 6 + mod(Math.floor(walkT), 13);
+  if (frame >= 0 && frame <= 18) {
+    f = frame;
+  } else if (swingT > 0 && swingT <= 1) {
+    f = Math.min(4, Math.max(1, 1 + Math.floor(swingT * 4)));
+  } else if (!onGround) {
+    f = 5;
+  } else {
+    f = 6 + mod(Math.floor(walkT * 13 / (Math.PI * 2)), 13);
+  }
+  void vy;
   ctx.save();
-  let bx = x;
-  if (facing === 1) { ctx.translate(x + L.drawW, y); ctx.scale(-1, 1); bx = 0; }
-  ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, y, L.drawW, L.drawH);
-  // 盔甲三件套叠绘: 保持纵横比, 高度铺满玩家 40x60 框并水平居中(参考站逻辑)
+  let bx = x, by = y;
+  // 14-a 关键修复: 镜像分支 translate 已含 y, 目标 y 用 0(旧代码重复 y → 朝右时精灵画到 2y 出屏 = 人物消失根因)
+  if (facing === 1) { ctx.translate(x + L.drawW, y); ctx.scale(-1, 1); bx = 0; by = 0; }
+  ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, by, L.drawW, L.drawH);
+  // 盔甲三件套叠绘: 保持纵横比, 高度铺满玩家绘制框并水平居中(参考站逻辑)
   if (armor) {
     for (const part of [armor.head, armor.body, armor.legs]) {
       if (!part) continue;
@@ -347,30 +363,16 @@ export function drawImgPlayer(ctx: CanvasRenderingContext2D, x: number, y: numbe
       if (!sw || !sh) continue;
       const ah = L.drawH;
       const aw = ah * (sw / sh);
-      ctx.drawImage(im, 0, 0, sw, sh, bx + (L.drawW - aw) / 2, y, aw, ah);
+      ctx.drawImage(im, 0, 0, sw, sh, bx + (L.drawW - aw) / 2, by, aw, ah);
     }
   }
   if (flash) {
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.75;
-    ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, y, L.drawW, L.drawH);
+    ctx.drawImage(img, f * L.fw, 0, L.fw, L.fh, bx, by, L.drawW, L.drawH);
   }
   ctx.restore();
-  // 手持物品图标: 手部 (x+facing*10, y+24), 挥击时旋转 -30°..+60°(按 swingT), 14px
-  if (heldIcon) {
-    const ic = A.img(heldIcon);
-    if (ic) {
-      const sw = srcW(ic), sh = srcH(ic);
-      if (sw && sh) {
-        const deg = swingT > 0 && swingT <= 1 ? -30 + 90 * swingT : 0;
-        ctx.save();
-        ctx.translate(x + facing * 10, y + 24);
-        ctx.rotate((deg * Math.PI / 180) * facing);
-        ctx.drawImage(ic, 0, 0, sw, sh, -7, -7, 14, 14);
-        ctx.restore();
-      }
-    }
-  }
+  // 手持物品由 render.ts 按参考站手部锚点叠绘(14-a), 此处不再画。
   return true;
 }
 
@@ -394,13 +396,14 @@ export function drawImgGuide(ctx: CanvasRenderingContext2D, x: number, y: number
   const A = store(); if (!A.ready) return false;
   const img = A.img('guide_spritesheet'); if (!img) return false;
   const L = LAYOUT.guide;
-  // 帧选择(参考站): sitting→14; 行走→1+(floor(walkT)%13); 否则 0
+  // 帧选择(参考站): sitting→14; 行走→1+(帧号%13); 否则 0
+  // 14-a: walkT 是弧度相位(每步周期 2π), 需换算 13 帧编号(旧版直接 floor 只会在 1..7 间跳)
   let f = 0;
   if (sitting) f = 14;
-  else if (Math.abs(walkT) > 0.001) f = 1 + mod(Math.floor(walkT), 13);
+  else if (Math.abs(walkT) > 0.001) f = 1 + mod(Math.floor(walkT * 13 / (Math.PI * 2)), 13);
   const fr = L.frames[f] ?? [0, 26];
-  // 参考站: drawImage(img, sx, 0, fw, 48, x-8÷2, y, 40, 60) — 向导帧自带左侧留白, 向左偏 offX
-  blit(ctx, img, fr[0], fr[1], 48, x - L.offX, y, L.drawW, L.drawH, facing, false);
+  // 参考站: drawImage(img, sx, 0, fw, 48, x, y, drawW, drawH) — 帧内容已紧裁剪且居中
+  blit(ctx, img, fr[0], fr[1], 48, x, y, L.drawW, L.drawH, facing, false);
   return true;
 }
 

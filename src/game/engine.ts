@@ -191,7 +191,9 @@ export class GameEngine {
   private stationCache: Record<string, boolean> = { workbench: false, furnace: false, anvil: false, altar: false };
   private stationFrame = -999;
   private pickupAgg = new Map<number, PickupAgg>();
-  private msgSeq = 1;
+  // 14-a: 消息 id 用时间基起始 — HMR/引擎重挂载后 msgSeq 重置会与 store 里
+  // 残留的旧消息 id 撞车(React duplicate key 报错)
+  private msgSeq = (Date.now() % 1000000) * 10;
   private uiDirty = true;
   private lastUiHp = -1;
   private raf = 0;
@@ -287,7 +289,7 @@ export class GameEngine {
     // 相机立即对准玩家(followCam 目标位), 防止视口变化后玩家跑出画面
     if (moved && p) {
       this.camX = p.x - this.viewW() / 2;
-      this.camY = p.y - this.viewH() * 0.62;
+      this.camY = (p.y - p.h / 2) - this.viewH() / 2;
       this.clampCam();
     }
   }
@@ -356,7 +358,7 @@ export class GameEngine {
     this.buildMapCanvas();
     this.markExplored(Math.floor(world.spawnX / 16), Math.floor(world.spawnY / 16));
     this.camX = world.spawnX - this.viewW() / 2;
-    this.camY = this.surfaceYpx() - this.viewH() * 0.72;
+    this.camY = (this.player.y - this.player.h / 2) - this.viewH() / 2;
     this.clampCam();
     this.uiDirty = true;
     this.syncUI(true);
@@ -632,7 +634,7 @@ export class GameEngine {
     this.buildMinimap();
     this.buildMapCanvas();
     this.camX = this.player.x - this.viewW() / 2;
-    this.camY = this.player.y - this.viewH() * 0.6;
+    this.camY = (this.player.y - this.player.h / 2) - this.viewH() / 2;
     this.clampCam();
     this.wasNight = this.isNight();
     Music.setScene(this.wasNight ? 'night' : 'day');
@@ -1104,6 +1106,18 @@ export class GameEngine {
 
     // ---- 使用手中物品(左键: 挖/放/武器) ----
     if (this.mouse.left && !this.invOpen && !this.mapOpen) this.useHeld();
+    // 14-a: 挖掘裂纹残留清理 —— 未持续挖掘的进度逐渐回退归零移除(旧版永久残留);
+    // 松开左键时清掉当前目标标记, 所有裂纹统一衰减
+    if (!this.mouse.left) this.mineTarget = null;
+    if (this.frame % 6 === 0 && this.mineDamage.size > 0) {
+      const cur = this.mineTarget;
+      for (const [idx, dmg] of this.mineDamage) {
+        if (idx === cur && this.mouse.left) continue;
+        const nd = dmg * 0.86;
+        if (nd < 0.5) this.mineDamage.delete(idx);
+        else this.mineDamage.set(idx, nd);
+      }
+    }
 
     // ---- 右键交互(边沿触发: 门 > 宝箱 > 向导 > 使用物品) ----
     if (this.mouse.right && !this.rightWas && !this.invOpen && !this.mapOpen) this.interactRight();
@@ -1188,12 +1202,14 @@ export class GameEngine {
 
   private followCam(): void {
     const p = this.player;
+    // 14-a: 参考站相机 —— 玩家身体中心居于画面正中(50%/50%), lerp 0.15
+    // (旧版 p.y - viewH*0.62 把人物压到画面下 1/3, 视觉上"不居中")
     const tx = p.x - this.viewW() / 2;
-    const ty = p.y - this.viewH() * 0.62;
+    const ty = (p.y - p.h / 2) - this.viewH() / 2;
     // 兜底(12-c): 玩家越出相机中心 0.5 视口范围(旋转屏/地址栏变化/异常传送) → 插值系数取 1 瞬移回中
     const outX = Math.abs(p.x - (this.camX + this.viewW() / 2)) > this.viewW() * 0.5;
-    const outY = Math.abs(p.y - (this.camY + this.viewH() * 0.62)) > this.viewH() * 0.5;
-    const k = outX || outY ? 1 : 0.14;
+    const outY = Math.abs((p.y - p.h / 2) - (this.camY + this.viewH() / 2)) > this.viewH() * 0.5;
+    const k = outX || outY ? 1 : 0.15;
     this.camX += (tx - this.camX) * k;
     this.camY += (ty - this.camY) * k;
     this.clampCam();
@@ -1375,7 +1391,11 @@ export class GameEngine {
       this.breakTile(gx, gy);
       return;
     }
-    if (this.mineTarget !== idx) { this.mineTarget = idx; }
+    if (this.mineTarget !== idx) {
+      // 14-a: 换目标时旧目标进度立即作废(裂纹由 tickGame 衰减清理)
+      if (this.mineTarget !== null) this.mineDamage.delete(this.mineTarget);
+      this.mineTarget = idx;
+    }
     let power = def?.power ?? 3;
     if (def?.tool && td.tool !== 'any' && def.tool !== td.tool) power = Math.max(3, power * 0.25);
     const need = td.minPower ?? 0;
@@ -2001,10 +2021,10 @@ export class GameEngine {
       }
       // flee 状态不造成接触伤害
       if (e.mode === 'flee') continue;
-      // 碰撞玩家
+      // 碰撞玩家(14-a: 精确 AABB —— 旧版上下各膨胀 e.h/2, 隔一格也能打到人)
       if (!p.dead && p.iframes <= 0 && p.spawnProt <= 0) {
-        if (Math.abs(e.x - p.x) < e.w / 2 + p.w / 2
-          && e.y > p.y - p.h - e.h / 2 && e.y - e.h < p.y + e.h / 2) {
+        if (Math.abs(e.x - p.x) < (e.w + p.w) / 2
+          && e.y > p.y - p.h && e.y - e.h < p.y) {
           const dmg = Math.max(1, Math.round(e.dmg * (0.9 + Math.random() * 0.2)));
           this.hurtPlayer(dmg, e.x > p.x ? -1 : 1, false);
         }
