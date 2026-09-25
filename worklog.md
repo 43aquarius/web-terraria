@@ -784,3 +784,16 @@ Work Log:
 Stage Summary:
 - 交付: standalone/main.ts UI 层全面原版化(13-a HUD 布局+13-b 标题/暂停/死亡屏)+build.ts 素材/字体增强+public/terraria.html 重建 1766.4KB; 13-c 物理修复经共享引擎自动带入并实测(嵌石推移/长期消散/玩家安全网三例全过)
 - 双版本视觉现已同步: 主版(/)与单文件版(/terraria.html)同为官方 logo+石质按钮+原版蓝 UI; 单文件版零素材外链(仅 Google Fonts)
+
+---
+Task ID: 13-e/13-f
+Agent: main
+Task: 全链路终验 + GitHub 推送
+
+Work Log:
+- 终验(主版 /): 标题屏官方 logo(560px)/GitHub 链接(_blank)/石质按钮 DOM 断言全过; enterWorld 后移动(+189px)/挖掘(泥土 1→0)/背包/暂停菜单 VLM+DOM 全过; 手机 375px 快捷栏-小地图零重叠; 零 page error
+- 终验(单文件版 /terraria.html): 引擎加载 engine-ok, 零错误
+- 提交 379d9f1(含 13-a/b/c/d 全部产物 + 模式位变更) 推送 https://github.com/43aquarius/web-terraria main 成功 (e9ddc29..379d9f1)
+
+Stage Summary:
+- 13 系列完成: 人物/怪物"卡死+消失"四根因根治(stepUp 全盒/刷怪 clearance/unstick 安全网/嵌死消散) + HUD/标题屏/暂停/死亡完全仿原版 + GitHub 入口(标题屏右下+暂停菜单) + 单文件版同步重建 + 已推送 GitHub
