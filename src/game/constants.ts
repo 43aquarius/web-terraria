@@ -513,7 +513,7 @@ export const CHEST_LOOT: Record<string, ChestLootEntry[]> = {
 
 // ==================== 玩家参数 ====================
 export const PLAYER_CONF = {
-  w: 12, h: 38,
+  w: 12, h: 42,   // 15-a: 高度对齐原版(42); 宽度保持 12 以兼容 1 格宽门洞(原版 20)
   runSpeed: 3.1,
   accel: 0.35,
   airAccel: 0.22,
@@ -551,16 +551,17 @@ export interface EnemyConf {
 }
 
 export const ENEMY_DEFS: Record<string, EnemyConf> = {
-  gslime: { name: '绿史莱姆', w: 16, h: 12, hp: 16, dmg: 7, kb: 0.1, gelDrop: [0, 1], night: false, fly: false, mapColor: '#5cd05c' },
-  bslime: { name: '蓝史莱姆', w: 22, h: 16, hp: 45, dmg: 12, kb: 0.25, gelDrop: [1, 2], night: false, fly: false, mapColor: '#5c8ee0' },
-  zombie: { name: '僵尸', w: 14, h: 36, hp: 55, dmg: 15, kb: 0.15, night: true, fly: false, mapColor: '#7a9b6a' },
-  eye: { name: '恶魔眼', w: 18, h: 14, hp: 38, dmg: 13, kb: 0.3, night: true, fly: true, mapColor: '#c05050', lensDrop: 0.5 },
+  // 15-a: 判定盒与原生精灵对齐(旧版 32x24 精灵記 16x12 判定 → 剑打不到怪身体/怪碰不到人)
+  gslime: { name: '绿史莱姆', w: 22, h: 18, hp: 16, dmg: 7, kb: 0.1, gelDrop: [0, 1], night: false, fly: false, mapColor: '#5cd05c' },
+  bslime: { name: '蓝史莱姆', w: 26, h: 20, hp: 45, dmg: 12, kb: 0.25, gelDrop: [1, 2], night: false, fly: false, mapColor: '#5c8ee0' },
+  zombie: { name: '僵尸', w: 16, h: 40, hp: 55, dmg: 15, kb: 0.15, night: true, fly: false, mapColor: '#7a9b6a' },
+  eye: { name: '恶魔眼', w: 26, h: 16, hp: 38, dmg: 13, kb: 0.3, night: true, fly: true, mapColor: '#c05050', lensDrop: 0.5 },
   // ---- 新敌怪 ----
-  bat: { name: '洞穴蝙蝠', w: 14, h: 10, hp: 18, dmg: 10, kb: 0.2, night: false, fly: true, mapColor: '#6a4a5a' },
-  skel: { name: '骷髅', w: 14, h: 34, hp: 65, dmg: 18, kb: 0.15, night: false, fly: false, mapColor: '#c8c8c8', def: 4 },
-  lslime: { name: '熔岩史莱姆', w: 18, h: 14, hp: 40, dmg: 22, kb: 0.2, gelDrop: [1, 2], night: false, fly: false, mapColor: '#f07030' },
-  eos: { name: '噬魂者', w: 16, h: 16, hp: 30, dmg: 15, kb: 0.25, night: false, fly: true, mapColor: '#8a5aaa', lensDrop: 0.15 },
-  eoc: { name: '克苏鲁之眼', w: 46, h: 38, hp: 1800, dmg: 24, kb: 0.9, night: true, fly: true, mapColor: '#d04040', boss: true, def: 8 },
+  bat: { name: '洞穴蝙蝠', w: 18, h: 16, hp: 18, dmg: 10, kb: 0.2, night: false, fly: true, mapColor: '#6a4a5a' },
+  skel: { name: '骷髅', w: 16, h: 40, hp: 65, dmg: 18, kb: 0.15, night: false, fly: false, mapColor: '#c8c8c8', def: 4 },
+  lslime: { name: '熔岩史莱姆', w: 24, h: 18, hp: 40, dmg: 22, kb: 0.2, gelDrop: [1, 2], night: false, fly: false, mapColor: '#f07030' },
+  eos: { name: '噬魂者', w: 22, h: 44, hp: 30, dmg: 15, kb: 0.25, night: false, fly: true, mapColor: '#8a5aaa', lensDrop: 0.15 },
+  eoc: { name: '克苏鲁之眼', w: 96, h: 52, hp: 1800, dmg: 24, kb: 0.9, night: true, fly: true, mapColor: '#d04040', boss: true, def: 8 },
 };
 
 // ==================== 向导台词 ====================

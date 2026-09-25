@@ -833,3 +833,65 @@ Stage Summary:
 - "人物/怪物消失"两真正根因全部根治: ①朝右镜像 2y 出屏(玩家默认朝右必现) ②dpr≥2 世界 dpr 倍放大出屏(全部手机)
 - 相机改参考站式 50%/50% 居中; 手持物品常显+贴手(参考站锚点/旋转公式); 全精灵比例对齐参考站; 洞穴不再全黑(暗度封顶+玩家环境光)
 - 附带修复: 走路动画帧换算(玩家/向导)、挖掘裂纹残留、敌怪判定框过大、React duplicate key、手机小地图与快捷栏重叠
+
+---
+Task ID: 15-a
+Agent: general-purpose (mp-server)
+Task: 联机 socket.io 服务端 mini-service
+
+Work Log:
+- 阅读 worklog 末尾(13/14 系列)了解项目现状; 参照 examples/websocket/server.ts 官方示例(path '/' 勿改/Caddy 依赖、cors *、pingTimeout 60000、pingInterval 25000、graceful shutdown 写法)
+- 创建 mini-services/mp-server/{package.json, index.ts}: 独立 Bun + socket.io 纯后端服务, 端口 3010 写死, 不动主仓任何代码
+- 协议实现: join(name trim 后 1-16 字符校验, 非法忽略; room trim 后 1-24 字符, 缺省/非法回落 "lobby"; 房间不存在则创建, seed = FNV-1a 32 位无符号正整数, 同房间码必同种子) / state(非空对象即原样转发, 零校验零日志) / tile(x/y/id 须有限数且 >=0, 合法才记日志+转发) / chat(截断 200 字符, 空文本忽略)
+- 出站事件: welcome{id, seed, edits 拷贝, roster(不含自己)} / pjoin{id,name} / pleave{id} / pstate{id,s} / tile{id,x,y,tile}(tile=方块id, id=发送者 socket.id) / chat{id,name,text}; 全部经 socket.to(room) 只发同房间其他人, 无自我回显
+- 房间数据: Map<code, {seed, edits:[x,y,tile][], players:Map<socketId,{name}>}>; edits 上限 30000 条超出丢最旧; 最后一人离开自动删房间; 同一 socket 重复 join 先 leaveRoom(广播 pleave+清理)再加入; state/tile/chat 未 join 直接忽略
+- 依赖: mp-server 目录内独立 `bun add socket.io@4.8.3` + `bun add -d socket.io-client@4.8.3`(测试用), 与根项目完全隔离; bunx tsc --strict 独立类型检查通过
+- **踩坑(重要)**: 本环境 Bash 工具每条命令结束后会清理其后台子进程 — 直接 `nohup bun run dev &` 与 `setsid ... &` 均被杀; 必须双层 fork `( cd … && nohup bun run dev > log 2>&1 < /dev/null & )` 让中间父进程立即退出、服务挂到 PID 1 下才能跨命令存活(与 Next dev/agent-browser 同款 PPID=1)
+- 集成测试(临时脚本放项目外 /home/z/mp-test.ts, socket.io-client 绝对路径导入, 跑完已删): 4 客户端 22 项断言全过 — welcome(id=自己/seed 正整数/新房间 edits+roster 空)、同房间 seed 一致、pjoin、pstate 13 字段原样转发、tile 字段正确+6 种非法值(负数×3/字符串/NaN/缺字段)全被忽略、chat 转发+250→200 截断+发送者不回显、第三人 welcome.edits 回放 [[10,20,5]]+roster 2 人、断开 pleave、重复 join 换房触发 pleave、跨房间 state 隔离、缺省 room 落 lobby
+- SIGTERM 实测: 日志输出 "SIGTERM received, shutting down mp-server..." + "mp-server closed", 进程退出端口释放(io.close + 2s 强退兜底); 随后双层 fork 重启服务恢复正常
+- 发现平台机制: /start.sh 容器启动时自动扫描 mini-services/* 子目录, 有 package.json 且含 dev 脚本即后台 `bun install && bun run dev`(日志 /tmp/mini-service-<name>.log) — mp-server 已天然符合约定, 容器重启后自动拉起, 无需注册
+- 服务最终状态: bun --hot index.ts 运行中(engine.io 握手 HTTP 200), 监听日志在 /tmp/mp-server.log; 连接/加入/离开/建房/清房各一行 console.log, state 转发零日志
+
+Stage Summary:
+- 产物: mini-services/mp-server/{package.json, index.ts, bun.lock}(约 190 行 strict TS) + 本地 node_modules; 主仓零改动
+- 端口: 3010(HTTP+WebSocket, socket.io path '/' 勿改 — Caddy 网关 XTransformPort 转发依赖), cors origin *, pingTimeout 60000 / pingInterval 25000
+- 协议事件名(客户端对接契约): C→S `join{name,room}` `state{x,y,dir,frame,walkT,onGround,hp,maxHp,held,swingT,armorH,armorB,armorL}` `tile{x,y,id}` `chat{text}`; S→C `welcome{id,seed,edits,roster}` `pjoin{id,name}` `pleave{id}` `pstate{id,s}` `tile{id,x,y,tile}` `chat{id,name,text}`
+- 要点: seed=FNV-1a(room) 确定性种子(客户端按 seed 生成同款世界); welcome.edits 按时间序回放方块编辑(上限 30000); 空房自动清理; 重复 join 先退旧房; chat 200 字符截断
+- 运维: 会话内手动启动须双层 fork 存活; 容器重启由 /start.sh mini-services 扫描自动拉起; SIGTERM/SIGINT 优雅关闭已验证
+
+---
+Task ID: 15
+Agent: main
+Task: 比例彻底修复 + 联机功能 + 原版化检查 + GitHub 图标
+
+Work Log:
+- 比例修复(逐帧 bbox 实测 + VLM 确认素材结构, 全部改「原生尺寸绘制」):
+  - player: 半尺寸表(19帧x20x30, 内容~11-15x24) → 2x 绘制 40x60(原版 40x56); PLAYER_CONF h 38→42(宽度保持 12 兼容 1 格门洞)
+  - skeleton: 帧结构勘误 60宽x7帧 → 30宽x14帧(旧切片把两帧腰斩拼一起); 原生 30x48
+  - zombie 34x46 / eye 37x22 / bat 28x24 / eos 42x78 / eow 头46x68/身42x46/尾42x64 全部原生(旧版统一压 32x48/32x24/24x16/32x32 严重变形)
+  - guide: 变宽帧原生绘制(旧版拉伸固定 32 宽, 胖瘦随帧跳变); drawImgGuide 内部按帧宽居中
+  - EoC: 素材为竖直存储(瞳孔朝下) → rotatedCW() 派生旋转画布 + 取中间帧切片绘制; P1 162x110 / P2 146x110 原生; facing=冲刺方向镜像; 首版忘切片(3 眼叠加)已修
+  - tree: 定宽切片绘制(旧版 w=76/142*h 等比 → 20 格树宽 10.7 格严重肥胖); 树冠64+树干带枝48平铺+根部30, 宽恒 76
+  - life crystal: 5 帧循环改为静态完整帧(素材实为心形品阶表, 循环=抽搐)
+  - 手持物: 固定 11.2px → itemDrawSize() 原生最大边(钳 8..36); 掉落物同款原生物品尺寸(旧统一 16x18)
+  - ENEMY_DEFS 判定盒与精灵对齐(eoc 46x38→96x52, eos 16x16→22x44, eye 18x14→26x16, bat 14x10→18x16, 史莱姆系放大, 僵尸/骷髅 16x40)
+- 联机功能(15-a 子代理服务端 + 15-b 主代理客户端):
+  - mini-services/mp-server(端口 3010, socket.io, path '/'): 房间制(join/welcome/pstate/tile/chat/pleave), FNV-1a 房间种子, 编辑日志回放(上限3万), 22 项断言全过, 容器重启自愈(/start.sh 自动拉起)
+  - src/game/net.ts: NetClient 单例(io('/?XTransformPort=3010')), 12Hz 状态广播+lerp 0.18 插值, 方块编辑 200ms 批次去重(液体不同步, 各端本地模拟), 远端玩家 8s 超时剔除
+  - engine: onTileChanged(x,y,id) 增广播(远程回放 applyingNet 守卫防回环); tick 增状态广播; enterWorldMP(欢迎→同种子 setupWorld→回放 edits→enterWorld); quitToTitle 断开; Enter 开聊天(输入框聚焦时引擎按键让位)
+  - render: 远端玩家绘制(同款精灵/盔甲/手持物 + 名牌 + 受伤血条 + 屏外裁剪)
+  - store: chatOpen/mpOnline/mpRoom/mpCount; HUD: 聊天输入条 + 联机徽章 + 聊天按钮 + GitHub 按钮(coarse 让位规则自动覆盖); Overlays: 标题屏「联机游戏」+ 对话框(昵称+房间码)
+  - 单机聊天本地回显; 帮助键位表补 Enter 聊天
+- 单文件版同步: 标题屏联机按钮+对话框+徽章+聊天条+聊天按钮(I_CHAT svg); socket.io-client 随 net.ts 打包; 重建 1878.5KB
+- 验证(agent-browser 双会话实测):
+  - 比例: 玩家 2.5x3.5 格居中/树干 1 格/镐子贴手/EoC 旋转后单眼横向 8-10 格宽瞳孔朝玩家触须向后/噬魂者竖高 4-5 格/骷髅完整 14 帧走路 — VLM 全过(修复前 EoC 3 眼竖叠、噬魂者被压扁)
+  - 联机(网关 :81 双会话): 同房间同世界(种子一致)/双端互见名牌/聊天端到端/方块双向同步(B 挖 A 见洞, A 放 B 见石)/移动插值可见/徽章「房间 test · 2 人在线」
+  - 单文件版: 联机入口/进入房间/徽章/按钮全过
+  - 手机 375x667 + iPhone 模拟: 快捷栏不溢出/聊天+GitHub 按钮 32px 入组/粗指针让位规则自动生效
+  - 桌面最终: 单机聊天回显「泰拉行者: 单机聊天测试」/GitHub 链接 href 正确/向导名牌/零 console 错误
+  - tsc(排除 examples/skills 既有 4 错) + lint 零错误
+
+Stage Summary:
+- 比例: 全精灵原生尺寸绘制原则落地, 8 类实体 + 树 + 手持/掉落物 + 生命水晶 + EoC 旋转全部修复, VLM 评估「与原版 1.4 高度一致」
+- 联机: 房间码制多人(共享种子世界 + 实时方块同步 + 玩家互见 + 聊天), mp-server 3010 + net.ts 客户端, 主版与单文件版双端可用; 敌怪/AI 为本地实例(v1 范围)
+- GitHub 入口三处: 标题屏右下 / 暂停菜单 / 游戏内右下按钮组(octocat, _blank)

@@ -15,6 +15,7 @@
 
 import { GameEngine, getEngine } from '../src/game/engine';
 import { ui, type UIState, type Slot } from '../src/game/store';
+import { net } from '../src/game/net';
 import {
   ItemDefs, RECIPES, WORLD_SIZES,
   type ArmorSlot, type ItemKind, type StationKind, type WorldSize,
@@ -172,6 +173,20 @@ button{font:inherit}
 
 /* ---- 消息(左下: 原版聊天风格纯半透明黑底白字) ---- */
 #msgs{position:absolute;left:12px;bottom:12px;display:flex;flex-direction:column;gap:4px;max-width:70vw;z-index:10}
+/* ---- 联机(15-b): 徽章 / 聊天输入条 ---- */
+#mp-badge{display:none;align-items:center;gap:5px;border:1px solid rgba(120,140,220,.6);border-radius:3px;
+  background:rgba(20,28,60,.6);padding:2px 6px;font-size:10px;font-weight:700;color:#8ad8ff;text-shadow:1px 1px 0 #000}
+#mp-badge .dot{width:6px;height:6px;border-radius:50%;background:#5ce05c}
+#mp-badge.on{display:flex}
+#chat{position:absolute;left:12px;bottom:calc(env(safe-area-inset-bottom,0px) + 64px);display:none;align-items:center;gap:8px;
+  width:min(70vw,26rem);z-index:30}
+#chat.open{display:flex}
+#chat .tag{flex:none;border-radius:3px;background:rgba(63,82,151,.9);padding:4px 6px;font-size:11px;font-weight:700;color:#f7d060;text-shadow:1px 1px 0 #000}
+#chat input{flex:1;min-width:0;border:2px solid rgba(120,140,220,.9);border-radius:3px;background:rgba(12,16,40,.9);
+  padding:6px 8px;font-size:14px;color:#fff;outline:none;font-family:inherit}
+#chat input:focus{border-color:#f7d060}
+.mp-tip{margin:0 0 12px;font-size:11px;line-height:1.7;color:#c8d0e8}
+.mp-tip b{color:#f7d060}
 .msg{width:max-content;max-width:100%;overflow-wrap:break-word;background:rgba(0,0,0,.5);
   padding:2px 8px;font-size:13px;line-height:1.375;color:#fff;text-shadow:1px 1px 0 #000;
   animation:msgfade 3.5s linear forwards}
@@ -378,6 +393,7 @@ const I_HELP = svg('<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5
 const I_SHIELD = svg('<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>');
 const I_CROSSHAIR = svg('<circle cx="12" cy="12" r="10"/><line x1="22" y1="12" x2="18" y2="12"/><line x1="6" y1="12" x2="2" y2="12"/><line x1="12" y1="6" x2="12" y2="2"/><line x1="12" y1="22" x2="12" y2="18"/>');
 const I_BACKPACK = svg('<path d="M4 10a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Z"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/><path d="M8 21v-5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v5"/><path d="M8 10h8"/>');
+const I_CHAT = svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>');
 const I_GITHUB = svg('<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>');
 
 /* ==================== 静态数据 ==================== */
@@ -491,13 +507,15 @@ const BODY_HTML = `
       <div class="depth"></div>
       <div class="dn day">${I_SUN}<span class="dn-txt">白天</span></div>
     </div>
+    <div id="mp-badge"><span class="dot"></span><span id="mp-badge-txt">房间 · 在线</span></div>
     <button type="button" id="smart-btn" class="terraria-font" aria-pressed="false" title="智能光标 (C)">${I_CROSSHAIR}<span>智能 关</span></button>
   </div>
 
   <div id="msgs"></div>
 
   <div id="hud-btns">
-    <span class="hint">C 智能 · M 静音 · H 帮助</span>
+    <span class="hint">C 智能 · Enter 聊天 · H 帮助</span>
+    <button type="button" class="icon-btn" id="btn-chat" aria-label="聊天" title="聊天 (Enter)">${I_CHAT}</button>
     <button type="button" class="icon-btn" id="btn-inv" aria-label="打开背包">${I_BACKPACK}</button>
     <button type="button" class="icon-btn" id="btn-mute" aria-label="静音"></button>
     <button type="button" class="icon-btn" id="btn-help" aria-label="操作说明">${I_HELP}</button>
@@ -510,6 +528,7 @@ const BODY_HTML = `
     <button type="button" class="t-menu-btn t-menu-btn-gold" id="btn-enter"><span class="t-btn-text t-btn-text-gold">进入世界</span></button>
     <button type="button" class="t-menu-btn" id="btn-continue" style="display:none"><span class="t-btn-text">继续上次冒险</span></button>
     <button type="button" class="t-menu-btn" id="btn-regen"><span class="t-btn-text">生成新世界</span></button>
+    <button type="button" class="t-menu-btn" id="btn-mp"><span class="t-btn-text">联机游戏</span></button>
     <button type="button" class="t-menu-btn" id="btn-title-help"><span class="t-btn-text">操作指南</span></button>
   </nav>
   <p class="ver t-stroke">Web 复刻版 v0.2</p>
@@ -552,6 +571,36 @@ const BODY_HTML = `
       <p class="t-stroke">正在生成世界…</p>
     </div>
   </div>
+</div>
+
+<div class="ovl terraria-font" id="mp">
+  <div class="gen-box t-panel" role="dialog" aria-label="联机游戏">
+    <div class="gen-head">
+      <h2 class="gen-title t-stroke">联机游戏</h2>
+      <button type="button" class="t-close" id="btn-mp-close" aria-label="关闭联机对话框">✕</button>
+    </div>
+    <p class="mp-tip">和好友输入<b>相同房间码</b>进入同一个世界：一起挖矿、盖房、聊天。世界由房间码决定，方块编辑实时同步。</p>
+    <label class="field" style="display:block">
+      <span class="flabel t-stroke">昵称</span>
+      <input type="text" class="t-input" id="mp-name" maxlength="12" value="泰拉行者"
+        autocomplete="off" spellcheck="false">
+    </label>
+    <label class="field" style="display:block">
+      <span class="flabel t-stroke">房间码</span>
+      <input type="text" class="t-input" id="mp-room" maxlength="16" placeholder="lobby" value="lobby"
+        autocomplete="off" spellcheck="false">
+    </label>
+    <div class="gen-btns">
+      <button type="button" class="t-menu-btn t-menu-btn-gold t-menu-btn-sm" id="btn-mp-start"><span class="t-btn-text t-btn-text-gold">加入房间</span></button>
+      <button type="button" class="t-menu-btn t-menu-btn-sm" id="btn-mp-back"><span class="t-btn-text">返回</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="chat" aria-label="聊天输入">
+  <span class="tag" id="chat-tag">房间</span>
+  <input type="text" id="chat-input" maxlength="100" placeholder="按 Enter 发送， Esc 关闭…"
+    autocomplete="off" spellcheck="false">
 </div>
 
 <div class="ovl terraria-font" id="dead">
@@ -707,6 +756,7 @@ function render(st: UIState): void {
   document.body.classList.toggle('playing', playing);   // 触屏控制层仅在游戏中显示
   $('title').classList.toggle('open', st.screen === 'title' && !st.loading);
   $('gen').classList.toggle('open', st.screen === 'title' && !st.loading && genOpen);
+  $('mp').classList.toggle('open', st.screen === 'title' && !st.loading && mpOpen);
   $('dead').classList.toggle('open', st.screen === 'dead');
   $('paused').classList.toggle('open', st.paused && st.screen === 'playing' && !st.loading);
   $('loading').classList.toggle('open', st.loading);
@@ -722,6 +772,27 @@ function render(st: UIState): void {
   else if (cont.style.display === 'none' && st.hasSave) cont.style.display = '';
 
   if (!playing) return;
+
+  // ---- 联机(15-b): 徽章 + 聊天输入条 ----
+  const badge = $('mp-badge');
+  if (st.mpOnline) {
+    badge.classList.add('on');
+    $('mp-badge-txt').textContent = `房间 ${st.mpRoom || 'lobby'} · ${st.mpCount} 人在线`;
+  } else {
+    badge.classList.remove('on');
+  }
+  const chat = $('chat');
+  if (st.chatOpen) {
+    chat.classList.add('open');
+    $('chat-tag').textContent = st.mpOnline ? `房间·${st.mpRoom || 'lobby'}` : '留言';
+    const inp = $('chat-input') as HTMLInputElement;
+    if (document.activeElement !== inp) {
+      inp.value = '';
+      requestAnimationFrame(() => inp.focus());
+    }
+  } else {
+    chat.classList.remove('open');
+  }
 
   // ---- 心形血条(20 颗/行, 小屏自动换行) ----
   const hk = `${st.hp}/${st.maxHp}`;
@@ -930,6 +1001,7 @@ function render(st: UIState): void {
 /* ==================== 世界生成对话框 ==================== */
 
 let genOpen = false;
+let mpOpen = false;   // 15-b: 联机对话框
 let genSize: WorldSize = 'small';
 let generating = false;
 
@@ -963,6 +1035,25 @@ function openGen(): void {
 function closeGen(): void {
   if (generating) return;
   genOpen = false;
+  render(ui.getSnapshot());
+}
+
+/** 15-b: 联机对话框开合 + 加入房间 */
+function openMp(): void {
+  mpOpen = true;
+  render(ui.getSnapshot());
+}
+
+function closeMp(): void {
+  mpOpen = false;
+  render(ui.getSnapshot());
+}
+
+function startMp(): void {
+  const name = ($('mp-name') as HTMLInputElement).value.trim() || '泰拉行者';
+  const room = ($('mp-room') as HTMLInputElement).value.trim() || 'lobby';
+  mpOpen = false;
+  getEngine()?.enterWorldMP(name, room);
   render(ui.getSnapshot());
 }
 
@@ -1054,6 +1145,24 @@ function bindEvents(): void {
   $('btn-enter').addEventListener('click', () => getEngine()?.enterWorld());
   $('btn-continue').addEventListener('click', () => getEngine()?.continueGame());
   $('btn-regen').addEventListener('click', openGen);
+  $('btn-mp').addEventListener('click', openMp);
+  $('btn-mp-back').addEventListener('click', closeMp);
+  $('btn-mp-close').addEventListener('click', closeMp);
+  $('btn-mp-start').addEventListener('click', startMp);
+  $('btn-chat').addEventListener('click', () => ui.set({ chatOpen: true }));
+  $('mp-room').addEventListener('keydown', (e) => { if ((e as KeyboardEvent).key === 'Enter') startMp(); });
+  $('chat-input').addEventListener('keydown', (e) => {
+    const ke = e as KeyboardEvent;
+    ke.stopPropagation();
+    if (ke.key === 'Enter') {
+      const t = ($('chat-input') as HTMLInputElement).value.trim();
+      if (t) net.sendChat(t);
+      ($('chat-input') as HTMLInputElement).value = '';
+      ui.set({ chatOpen: false });
+    } else if (ke.key === 'Escape') {
+      ui.set({ chatOpen: false });
+    }
+  });
   $('btn-title-help').addEventListener('click', () => { titleHelpOpen = true; render(ui.getSnapshot()); });
   $('btn-resume').addEventListener('click', () => getEngine()?.togglePause());
   $('btn-save').addEventListener('click', () => {

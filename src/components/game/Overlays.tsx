@@ -194,6 +194,12 @@ export default function Overlays() {
   const [genDev, setGenDev] = useState(false)
   const [generating, setGenerating] = useState(false)
 
+  /* ---- 联机对话框状态(15-b) ---- */
+  const [showMp, setShowMp] = useState(false)
+  const [mpName, setMpName] = useState('泰拉行者')
+  const [mpRoom, setMpRoom] = useState('lobby')
+  const [mpConnecting, setMpConnecting] = useState(false)
+
   const handleSave = (): void => {
     const ok = engine.saveGame()
     toast({
@@ -211,6 +217,17 @@ export default function Overlays() {
       engine.enterWorld()
       setGenerating(false)
       setShowGen(false)
+    }, 60)
+  }
+
+  /** 联机入场: 连接 mp-server(3010) → 同房间同种子世界 */
+  const handleStartMP = (): void => {
+    if (mpConnecting) return
+    setMpConnecting(true)
+    window.setTimeout(() => {
+      engine.enterWorldMP(mpName.trim() || '泰拉行者', mpRoom.trim() || 'lobby')
+      setMpConnecting(false)
+      setShowMp(false)
     }, 60)
   }
 
@@ -247,6 +264,7 @@ export default function Overlays() {
                 <MenuButton onClick={() => engine.continueGame()}>继续上次冒险</MenuButton>
               )}
               <MenuButton onClick={() => setShowGen(true)}>生成新世界</MenuButton>
+              <MenuButton onClick={() => setShowMp(true)}>联机游戏</MenuButton>
               <MenuButton onClick={() => setShowHelp(true)}>操作指南</MenuButton>
             </nav>
           </div>
@@ -383,6 +401,71 @@ export default function Overlays() {
                 </span>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ---- 联机对话框(15-b: 昵称 + 房间码, 同房间共享世界与编辑) ---- */}
+      {showMp && (
+        <div className="ovl-fade pointer-events-auto absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="t-panel w-[22rem] max-w-full p-4 sm:w-[25rem]">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="t-stroke text-base font-bold tracking-widest text-[#f7d060]">
+                联机游戏
+              </h2>
+              <button
+                type="button"
+                aria-label="关闭联机对话框"
+                disabled={mpConnecting}
+                className="t-close px-2 py-0.5 text-xs"
+                onClick={() => setShowMp(false)}
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="mb-3 text-[11px] leading-relaxed text-[#c8d0e8]">
+              和好友输入<b className="text-[#f7d060]">相同房间码</b>进入同一个世界：一起挖矿、盖房、聊天。
+              世界由房间码决定，方块编辑实时同步。
+            </p>
+
+            <label className="mb-3 block">
+              <span className="t-stroke mb-1 block text-xs font-bold text-[#f0e8c8]">昵称</span>
+              <input
+                type="text"
+                value={mpName}
+                disabled={mpConnecting}
+                maxLength={12}
+                onChange={(e) => setMpName(e.target.value)}
+                className="t-input px-2 py-1.5 text-sm"
+              />
+            </label>
+
+            <label className="mb-4 block">
+              <span className="t-stroke mb-1 block text-xs font-bold text-[#f0e8c8]">房间码</span>
+              <input
+                type="text"
+                value={mpRoom}
+                disabled={mpConnecting}
+                maxLength={16}
+                placeholder="lobby"
+                onChange={(e) => setMpRoom(e.target.value)}
+                className="t-input px-2 py-1.5 text-sm"
+              />
+            </label>
+
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <MenuButton gold small onClick={handleStartMP}>
+                  {mpConnecting ? '连接中…' : '加入房间'}
+                </MenuButton>
+              </div>
+              <div className="flex-1">
+                <MenuButton small onClick={() => setShowMp(false)}>
+                  返回
+                </MenuButton>
+              </div>
+            </div>
           </div>
         </div>
       )}

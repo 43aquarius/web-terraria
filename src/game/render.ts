@@ -16,10 +16,11 @@ import {
   getAssets, loadAssets, TILE_SHEET, tileFamily, frameFor, LAYOUT,
   drawImgPlayer, drawImgZombie, drawImgSkeleton, drawImgGuide, drawImgSlime, drawImgEye,
   drawImgBat, drawImgEos, drawImgEoC, drawTreeSprite, drawTallGrass, drawImgTorch, applyItemIcons,
-  type Assets,
+  itemDrawSize, type Assets,
 } from './assets';
 import type { ExtraLight } from './lighting';
 import type { GameEngine } from './engine';
+import { net, type RemotePlayer } from './net';
 import type { World } from './world';
 import type { Slot } from './store';
 
@@ -62,13 +63,15 @@ let itemIconsApplied = false;
  * 若 12-a 实现的锚点语义不同, 只需统一调整本表。
  */
 const IMG_OFF = {
-  player: [-16, -48],    // 32x48 (14-a 参考站比例: 玩家绘 2x3 格)
-  humanoid: [-16, -48],  // 僵尸/骷髅/向导 32x48
-  slime: [-16, -24],     // 史莱姆 32x24
-  eye: [-16, -24],       // 恶魔眼 32x24
-  bat: [-12, -16],       // 蝙蝠 24x16
-  eos: [-16, -32],       // 吞噬者 32x32
-  eoc: [-32, -64],       // 克苏鲁之眼 64x64
+  player: [-20, -60],   // 40x60(半尺寸帧 2x, 原版玩家 40x56)
+  zombie: [-17, -46],   // 原生 34x46
+  skel: [-15, -48],     // 原生 30x48
+  guide: [-16, -48],    // 帧宽可变, drawImgGuide 内部按帧宽居中(参考 16 还原)
+  slime: [-16, -24],    // 原生 32x24
+  eye: [-18, -22],      // 原生 37x22
+  bat: [-14, -24],      // 原生 28x24
+  eos: [-21, -78],      // 原生 42x78
+  // eoc: drawImgEoC 直接接收实体中心坐标, 无需偏移
 } as const;
 
 /** 盔甲套装(以头盔 id 为 key, 同 armorColorsOf 的 +offset 规则) → 原版 ingame 贴图三件套名 */
@@ -838,11 +841,11 @@ export function renderGame(g: GameEngine): void {
         continue;
       }
       if (id === T.LIFE_CRYSTAL) {
-        // 原版生命水晶: 5 帧 32x32, 中心对齐格子(px-8, py-8, 跨 1.5 格)
+        // 原版生命水晶: 静态完整帧(素材为 5 列×3 行 32x32 心形品阶表, 首格为完整态;
+        // 旧版循环 0-4 帧 = 播放"充能-耗尽"序列, 看起来像水晶在抽搐)
         const im = useAssets ? A.img('Life_Crystal_ingame') : null;
         if (im) {
-          const fr = Math.floor(performance.now() / 330) % 5;
-          ctx.drawImage(im, fr * 32, 0, 32, 32, px - 8, py - 8, 32, 32);
+          ctx.drawImage(im, 0, 0, 32, 32, px - 8, py - 8, 32, 32);
         } else {
           // 粉水晶两帧脉动(暖粉光晕)
           ctx.drawImage(tex.crystalFrames[(g.frame >> 4) & 1], px, py);
@@ -916,8 +919,10 @@ export function renderGame(g: GameEngine): void {
   for (const d of g.drops) {
     const icon = tex.icons[d.id];
     if (!icon) continue;
+    // 15-a: 原生物品尺寸(旧版统一 16x18; 铜镦等工具 32px 掉落物应与原版一致可观)
     const bob = Math.sin(d.bob) * 1.6;
-    ctx.drawImage(icon, d.x - 8, d.y - 9 + bob);
+    const s = itemDrawSize(d.id);
+    ctx.drawImage(icon, d.x - s / 2, d.y - s / 2 + bob, s, s);
   }
 
   // ---- 敌怪(原版素材优先, 未就绪/无映射回退程序化) ----
@@ -935,7 +940,7 @@ export function renderGame(g: GameEngine): void {
       drawSlime(ctx, e.kind === 'gslime' ? SLIME_GREEN : SLIME_BLUE, e.x, e.y, e.w, e.h, squish, e.dir, flash);
     } else if (e.kind === 'zombie') {
       if (useAssets
-        && drawImgZombie(ctx, e.x + IMG_OFF.humanoid[0], e.y + IMG_OFF.humanoid[1], e.anim * 0.13, e.dir, flash)) continue;
+        && drawImgZombie(ctx, e.x + IMG_OFF.zombie[0], e.y + IMG_OFF.zombie[1], e.anim * 0.13, e.dir, flash)) continue;
       drawHumanoid(ctx, ZOMBIE_PALETTE, {
         x: e.x, y: e.y, dir: e.dir, walkT: e.anim * 0.13, onGround: e.onGround, vy: e.vy,
         zombieArms: true, flash,
@@ -950,7 +955,7 @@ export function renderGame(g: GameEngine): void {
       drawBat(ctx, e.x, e.y, e.w, e.h, e.anim, e.dir, flash);
     } else if (e.kind === 'skel') {
       if (useAssets
-        && drawImgSkeleton(ctx, e.x + IMG_OFF.humanoid[0], e.y + IMG_OFF.humanoid[1], e.anim * 0.13, e.dir, flash)) continue;
+        && drawImgSkeleton(ctx, e.x + IMG_OFF.skel[0], e.y + IMG_OFF.skel[1], e.anim * 0.13, e.dir, flash)) continue;
       drawHumanoid(ctx, SKELETON_PALETTE, {
         x: e.x, y: e.y, dir: e.dir, walkT: e.anim * 0.13, onGround: e.onGround, vy: e.vy,
         zombieArms: true, flash,
@@ -977,14 +982,15 @@ export function renderGame(g: GameEngine): void {
         && drawImgEos(ctx, e.x + IMG_OFF.eos[0], e.y + IMG_OFF.eos[1], e.anim * 0.1, e.dir, flash)) continue;
       drawEos(ctx, e.x, e.y, e.w, e.h, e.anim, e.dir, flash);
     } else if (e.kind === 'eoc') {
-      // 蓄力/旋转前摇: 整体 ±1.5px 随机抖动
+      // 蓄力/旋转前摇: 整体 ±1.5px 随机抖动; facing = 冲刺方向(素材旋转后瞳孔朝左, 向右时镜像)
       const jitter = e.mode === 'telegraph' || e.mode === 'spin';
       const jx = jitter ? (Math.random() * 2 - 1) * 1.5 : 0;
       const jy = jitter ? (Math.random() * 2 - 1) * 1.5 : 0;
+      const eocFacing = e.vx !== 0 ? Math.sign(e.vx) : Math.sign(g.player.x - e.x) || 1;
       if (useAssets && drawImgEoC(
-        ctx, e.x + jx + IMG_OFF.eoc[0], e.y + jy + IMG_OFF.eoc[1], e.phase ?? 0,
+        ctx, e.x + jx, e.y + jy, e.phase ?? 0,
         (g.player.x - e.x) * 0.02, (g.player.y - g.player.h / 2 - e.y) * 0.02,
-        e.mode === 'spin' ? performance.now() / 100 % (Math.PI * 2) : 0, flash,
+        e.mode === 'spin' ? performance.now() / 100 % (Math.PI * 2) : 0, flash, eocFacing,
       )) continue;
       drawEoC(
         ctx, e.x + jx, e.y + jy, e.w, e.h, e.phase ?? 0,
@@ -997,7 +1003,7 @@ export function renderGame(g: GameEngine): void {
   // ---- 向导 NPC(原版精灵优先, 名牌/气泡保留) ----
   const gd = g.guide;
   if (gd) {
-    if (!useAssets || !drawImgGuide(ctx, gd.x + IMG_OFF.humanoid[0], gd.y + IMG_OFF.humanoid[1], gd.walkT, gd.dir, false)) {
+    if (!useAssets || !drawImgGuide(ctx, gd.x + IMG_OFF.guide[0], gd.y + IMG_OFF.guide[1], gd.walkT, gd.dir, false)) {
       drawHumanoid(ctx, GUIDE_PALETTE, {
         x: gd.x, y: gd.y, dir: gd.dir, walkT: gd.walkT, onGround: gd.onGround, vy: gd.vy,
       });
@@ -1067,9 +1073,9 @@ export function renderGame(g: GameEngine): void {
           swing, flash: false, armor: armorColorsOf(p.armor),
         });
       }
-      // 14-a: 手持物品常显 + 参考站手部锚点(修复"与人物图层分离")。
-      // 参考站: 锚点 = 精灵左上 + (朝右 0.7 / 朝左 0.3)×宽, 顶部 + 0.4×高;
-      // 挥击时旋转 rot = dir × (-0.36 + 0.96·t)(线性); 尺寸 0.7 格 = 11.2 世界px。
+      // 15-a: 手持物品常显 + 参考站手部锚点 + 原生物品尺寸(旧版固定 11.2px 相对 40x60 玩家过小)。
+      // 锚点 = 精灵左上 + (朝右 0.7 / 朝左 0.3)×宽, 顶部 + 0.4×高;
+      // 挥击时旋转 rot = dir × (-0.36 + 0.96·t)(线性); 尺寸 = 物品原生最大边(锦 8..36)。
       if (drew) {
         const held = p.inv[p.hotbar];
         const icon = held ? tex.icons[held.id] : null;
@@ -1080,13 +1086,61 @@ export function renderGame(g: GameEngine): void {
           const py = spriteT + 0.4 * LAYOUT.player.drawH;
           const t = p.swing ? p.swing.t / p.swing.dur : 0;
           const rot = p.swing ? p.dir * (-0.36 + 0.96 * t) : 0;
-          const s = 11.2;
+          const s = itemDrawSize(held!.id);
           ctx.save();
           ctx.translate(px, py);
           ctx.rotate(rot);
           ctx.drawImage(icon, -s / 2, -s / 2, s, s);
           ctx.restore();
         }
+      }
+    }
+  }
+
+  // ---- 联机远端玩家(15-b): 同款精灵/盔甲/手持物 + 名牌 + 头顶血条 ----
+  if (net.online && net.remotes.size > 0) {
+    for (const r of net.remotes.values()) {
+      // 屏外裁剪(±80px)
+      if (r.x < g.camX - 80 || r.x > g.camX + g.viewW() + 80 || r.y < g.camY - 120 || r.y > g.camY + g.viewH() + 120) continue;
+      const armor = armorImgsOf({
+        head: r.armorH ? { id: r.armorH, count: 1 } : null,
+        body: r.armorB ? { id: r.armorB, count: 1 } : null,
+        legs: r.armorL ? { id: r.armorL, count: 1 } : null,
+      });
+      const drew = drawImgPlayer(
+        ctx, r.x + IMG_OFF.player[0], r.y + IMG_OFF.player[1],
+        r.frame, r.dir, r.walkT, r.onGround, 0, r.swingT, armor, false,
+      );
+      if (drew) {
+        // 手持物(与本地玩家同公式)
+        const icon = r.held ? tex.icons[r.held] : null;
+        if (icon) {
+          const px = r.x + IMG_OFF.player[0] + (r.dir === 1 ? 0.7 : 0.3) * LAYOUT.player.drawW;
+          const py = r.y + IMG_OFF.player[1] + 0.4 * LAYOUT.player.drawH;
+          const rot = r.swingT > 0 ? r.dir * (-0.36 + 0.96 * r.swingT) : 0;
+          const s = itemDrawSize(r.held);
+          ctx.save();
+          ctx.translate(px, py);
+          ctx.rotate(rot);
+          ctx.drawImage(icon, -s / 2, -s / 2, s, s);
+          ctx.restore();
+        }
+      }
+      // 名牌 + 血条(受伤时显示)
+      ctx.font = '7px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      const nw = ctx.measureText(r.name).width + 6;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(r.x - nw / 2, r.y - 74, nw, 10);
+      ctx.fillStyle = '#8ad8ff';
+      ctx.fillText(r.name, r.x, r.y - 66);
+      if (r.hp < r.maxHp) {
+        const bw = 30;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(r.x - bw / 2 - 1, r.y - 63, bw + 2, 4);
+        ctx.fillStyle = '#e04848';
+        ctx.fillRect(r.x - bw / 2, r.y - 62, bw * clamp(r.hp / r.maxHp, 0, 1), 2);
       }
     }
   }

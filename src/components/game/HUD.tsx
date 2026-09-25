@@ -19,11 +19,12 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { Backpack, Crosshair, HelpCircle, Moon, Shield, Sun, Volume2, VolumeX } from 'lucide-react'
+import { Backpack, Crosshair, Github, HelpCircle, MessageCircle, Moon, Shield, Sun, Volume2, VolumeX } from 'lucide-react'
 import { ui, type Slot, type UIState } from '@/game/store'
 import { ItemDefs, RECIPES, type ArmorSlot, type ItemKind, type StationKind } from '@/game/constants'
 import { getTextures, type GameTextures } from '@/game/textures'
 import { engine } from '@/game/engine'
+import { net } from '@/game/net'
 
 /* ==================== 常量 ==================== */
 
@@ -53,6 +54,7 @@ export const GAME_CONTROLS: readonly (readonly [string, string])[] = [
   ['E', '打开背包'],
   ['Tab', '全屏地图'],
   ['C', '智能光标'],
+  ['Enter', '聊天(联机)'],
   ['Esc', '暂停 / 关闭界面'],
   ['M', '静音'],
   ['H', '操作说明'],
@@ -442,6 +444,25 @@ export default function HUD() {
   const [helpOpen, setHelpOpen] = useState(false)
   const [hoverItemId, setHoverItemId] = useState<number | null>(null)
   const [hoverRecipe, setHoverRecipe] = useState<number | null>(null)
+  /* ---- 聊天(15-b): Enter 打开输入框, 联机时发送到房间 ---- */
+  const [chatText, setChatText] = useState('')
+  const chatRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (st.chatOpen) {
+      // 展开后聚焦(下一帧, 确保元素已挂载)
+      requestAnimationFrame(() => chatRef.current?.focus())
+    }
+  }, [st.chatOpen])
+  const sendChat = (): void => {
+    const t = chatText.trim()
+    if (t) net.sendChat(t)
+    setChatText('')
+    ui.set({ chatOpen: false })
+  }
+  const closeChat = (): void => {
+    setChatText('')
+    ui.set({ chatOpen: false })
+  }
 
   const { screen, invOpen, paused } = st
   /** 背包/宝箱任一打开时展示左上面板(打开宝箱时引擎不置 invOpen,由 UI 合并展示) */
@@ -692,6 +713,13 @@ export default function HUD() {
             <span>{st.isNight ? '夜晚' : '白天'}</span>
           </div>
         </div>
+        {/* 联机徽章(15-b): 房间码 + 在线人数 */}
+        {st.mpOnline && (
+          <div className="flex items-center gap-1 rounded-[3px] border border-[rgba(120,140,220,0.6)] bg-[rgba(20,28,60,0.6)] px-1.5 py-0.5 text-[10px] font-bold text-[#8ad8ff] [text-shadow:1px_1px_0_#000]">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#5ce05c]" aria-hidden />
+            <span>房间 {st.mpRoom || 'lobby'} · {st.mpCount} 人在线</span>
+          </div>
+        )}
         <button
           type="button"
           aria-pressed={st.smart}
@@ -747,10 +775,33 @@ export default function HUD() {
         ))}
       </div>
 
-      {/* ---- 右下:背包 / 静音 / 帮助按钮(原版蓝)+ 提示文字(触屏时按钮组抬到跳跃钮上方, 见 HUD_CSS) ---- */}
+      {/* ---- 聊天输入框(15-b: Enter 发送, Esc 关闭; 打开时引擎按键全部让位) ---- */}
+      {st.chatOpen && (
+        <div className="pointer-events-auto absolute bottom-16 left-3 z-30 flex w-[min(70vw,26rem)] items-center gap-2 sm:bottom-20">
+          <span className="shrink-0 rounded-[3px] bg-[rgba(63,82,151,0.9)] px-1.5 py-1 text-[11px] font-bold text-[#f7d060] [text-shadow:1px_1px_0_#000]">
+            {st.mpOnline ? `房间·${st.mpRoom || 'lobby'}` : '留言'}
+          </span>
+          <input
+            ref={chatRef}
+            type="text"
+            value={chatText}
+            maxLength={100}
+            placeholder={st.mpOnline ? '按 Enter 发送, Esc 关闭…' : '按 Enter 记录到消息栏, Esc 关闭…'}
+            onChange={(e) => setChatText(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') sendChat()
+              else if (e.key === 'Escape') closeChat()
+            }}
+            className="terraria-font w-full rounded-[3px] border-2 border-[rgba(120,140,220,0.9)] bg-[rgba(12,16,40,0.9)] px-2 py-1.5 text-sm text-white placeholder:text-white/40 focus:border-[#f7d060] focus:outline-none"
+          />
+        </div>
+      )}
+
+      {/* ---- 右下:背包 / 聊天 / 静音 / 帮助 / GitHub 按钮(原版蓝)+ 提示文字 ---- */}
       <div className="hud-br absolute bottom-2 right-2 z-10 flex items-center gap-2">
         <span className="hud-br-hint pointer-events-none text-[11px] text-[#e8e4d8]/60 [text-shadow:1px_1px_0_#000]">
-          C 智能 · M 静音 · H 帮助
+          C 智能 · Enter 聊天 · H 帮助
         </span>
         <button
           type="button"
@@ -760,6 +811,25 @@ export default function HUD() {
         >
           <Backpack size={15} aria-hidden />
         </button>
+        <button
+          type="button"
+          aria-label="聊天"
+          title="聊天 (Enter)"
+          className="hud-ibtn pointer-events-auto flex h-8 w-8 items-center justify-center rounded-[3px] border-2 border-[rgba(120,140,220,0.9)] bg-[rgba(63,82,151,0.85)] text-[#f0e8d8] transition-colors hover:border-[#f7d060]"
+          onClick={() => ui.set({ chatOpen: true })}
+        >
+          <MessageCircle size={15} aria-hidden />
+        </button>
+        <a
+          href="https://github.com/43aquarius/web-terraria"
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="GitHub 仓库"
+          title="GitHub 仓库"
+          className="hud-ibtn pointer-events-auto flex h-8 w-8 items-center justify-center rounded-[3px] border-2 border-[rgba(120,140,220,0.9)] bg-[rgba(63,82,151,0.85)] text-[#f0e8d8] transition-colors hover:border-[#f7d060]"
+        >
+          <Github size={15} aria-hidden />
+        </a>
         <button
           type="button"
           aria-label={st.muted ? '取消静音' : '静音'}

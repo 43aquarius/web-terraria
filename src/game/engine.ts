@@ -25,6 +25,7 @@ import {
 } from './entities';
 import { SFX, Music } from './sound';
 import { ui, type Slot, type UIArmor } from './store';
+import { net } from './net';
 import { renderGame } from './render';
 
 export type Screen = 'title' | 'playing' | 'dead';
@@ -41,6 +42,7 @@ interface Sapling { x: number; y: number; t: number; due: number }
 /** React UI 可调用的引擎 API(单例) */
 export interface EngineAPI {
   enterWorld(): void;
+  enterWorldMP(name: string, room: string): void;
   continueGame(): void;
   regenerate(): void;
   newWorld(size: WorldSize, seedStr: string, playerName: string, dev: boolean): void;
@@ -178,6 +180,7 @@ export class GameEngine {
   saplings: Sapling[] = [];                 // 已种树苗
   devMode = false;                          // 开发模式(newWorld 参数)
   devFly = false;                           // dev 模式按住 F 飞行(每帧刷新)
+  applyingNet = false;                      // 15-b: 正在应用远端方块编辑(不回广播)
   playerName = '泰拉行者';
   seedStr = '';                             // 创建世界时的种子字符串
 
@@ -319,7 +322,7 @@ export class GameEngine {
   /** 世界通用装配: 玩家/向导/宝箱战利品/探索地图/相机 */
   private setupWorld(world: World, seedStr: string, playerName: string, dev: boolean, starter: boolean): void {
     this.world = world;
-    this.world.onTileChanged = (x, y) => this.onTileChanged(x, y);
+    this.world.onTileChanged = (x, y, id) => this.onTileChanged(x, y, id);
     this.seedStr = seedStr;
     this.playerName = playerName;
     this.devMode = dev;
@@ -507,6 +510,12 @@ export class GameEngine {
       return;
     }
     if (e.code === 'KeyC') { this.toggleSmart(); return; }
+    // Enter = 聊天输入框(联机时; 单机也可用作文流留音)
+    if (e.code === 'Enter' && !this.paused && !this.mapOpen && this.chestOpen === null && !this.invOpen) {
+      e.preventDefault();
+      ui.set({ chatOpen: true });
+      return;
+    }
     if (this.devMode && !this.paused) {
       if (e.code === 'KeyG') { this.devSpawn(); return; }
       if (e.code === 'KeyN') { this.devTime(); return; }
@@ -540,6 +549,11 @@ export class GameEngine {
     this.giveStarterItems();
     this.wasNight = false;
     Music.setScene('day');
+    // 15-b: 单机也接上聊天回显(Enter 输入 → 消息栏)
+    if (!net.online) {
+      if (!net.myName) net.myName = this.playerName;
+      net.onChat = (n, t) => this.msg(`${n}: ${t}`, '#8ad8ff');
+    }
     this.msg(`欢迎来到泰拉瑞亚, ${this.playerName}！砍树挖矿，打造装备吧。`, '#f7d060');
     this.uiDirty = true;
     this.syncUI(true);
@@ -552,6 +566,52 @@ export class GameEngine {
       this.initWorld(Math.floor(Math.random() * 1e9));
       ui.set({ loading: false });
     }, 50);
+  }
+
+  // ==================== 联机(15-b) ====================
+  /** 联机入场: 连接 mp-server → welcome(seed+edits) → 同种子生成世界 → 回放编辑 → 进世界 */
+  enterWorldMP(name: string, room: string): void {
+    const cleanName = (name.trim() || '泰拉行者').slice(0, 12);
+    const cleanRoom = (room.trim() || 'lobby').slice(0, 16);
+    this.playerName = cleanName;
+    ui.set({ loading: true, loadingText: `正在连接联机房间「${cleanRoom}」…` });
+    // 联机回调接线
+    net.onChat = (n, t) => this.msg(`${n}: ${t}`, '#8ad8ff');
+    net.onPlayerJoin = (n) => this.msg(`${n} 加入了房间`, '#a0e8a0');
+    net.onPlayerLeave = (n) => this.msg(`${n} 离开了`, '#e0c080');
+    net.onStatusChange = () => {
+      ui.set({ loading: false });
+      this.uiDirty = true;
+      this.syncUI(true);
+    };
+    net.applyRemoteTile = (x, y, id) => {
+      if (!this.world) return;
+      this.applyingNet = true;
+      try { this.world.set(x, y, id); } finally { this.applyingNet = false; }
+    };
+    let settled = false;
+    net.connect(cleanName, cleanRoom, (seed, edits, roster) => {
+      settled = true;
+      this.setupWorld(new World(seed), cleanRoom, cleanName, false, true);
+      // 回放房间历史方块编辑(不回广播)
+      this.applyingNet = true;
+      try { for (const [x, y, id] of edits) this.world.set(x, y, id); }
+      finally { this.applyingNet = false; }
+      this.enterWorld();
+      this.msg(`已加入联机房间「${cleanRoom}」· 世界种子 ${seed}`, '#8ad8ff');
+      this.msg('与好友挖同样的矿、盖同样的家！按 Enter 聊天。', '#8ad8ff');
+      if (roster.length) this.msg(`当前在线: ${roster.map((r) => r.name).join(', ')}`, '#a0e8a0');
+      this.uiDirty = true;
+      this.syncUI(true);
+      ui.set({ loading: false });
+    });
+    // 8 秒未收到 welcome → 报错并解除 loading
+    setTimeout(() => {
+      if (!settled && !net.online) {
+        ui.set({ loading: false });
+        this.msg('联机连接失败：无法连接服务器，请稍后重试', '#e07070');
+      }
+    }, 8000);
   }
 
   continueGame(): void {
@@ -579,7 +639,7 @@ export class GameEngine {
     const po = o.p as { x: number; y: number; hp: number; maxHp?: number; inv?: (Slot | null)[]; hotbar?: number; armor?: UIArmor; name?: string };
     const world = World.decode(worldStr);
     this.world = world;
-    this.world.onTileChanged = (x, y) => this.onTileChanged(x, y);
+    this.world.onTileChanged = (x, y, id) => this.onTileChanged(x, y, id);
     this.seedStr = typeof o.seedStr === 'string' ? o.seedStr : '';
     this.playerName = (po?.name ?? '泰拉行者') || '泰拉行者';
     this.devMode = legacy ? false : !!o.devMode;
@@ -645,6 +705,7 @@ export class GameEngine {
 
   quitToTitle(): void {
     this.save();
+    net.disconnect();      // 15-b: 退出到标题时断开联机
     this.screen = 'title';
     this.ambient = [];
     this.titleT = 0;
@@ -987,6 +1048,28 @@ export class GameEngine {
     if (!this.paused) this.tickGame();
     this.flushMap();
     this.syncUI(false);
+    // ---- 联机: 12Hz 广播自身状态 + 远端玩家插值/方块批次冲刷(15-b) ----
+    if (net.online && this.screen === 'playing') {
+      net.tickInterp();
+      net.flushTiles();
+      const p = this.player;
+      const held = p.inv[p.hotbar];
+      // 帧号推导(与 render.playerImgFrame 同规则: 1-4 挥击 / 5 跳 / 6-18 走)
+      let frame = 0;
+      if (p.swing) frame = 1 + Math.min(3, Math.floor((p.swing.t / p.swing.dur) * 4));
+      else if (!p.onGround) frame = 5;
+      else if (Math.abs(p.vx) > 0.3) frame = 6 + (((Math.round(p.walkT / ((Math.PI * 2) / 13)) % 13) + 13) % 13);
+      net.sendState({
+        x: Math.round(p.x * 10) / 10, y: Math.round(p.y * 10) / 10,
+        dir: p.dir, frame, walkT: Math.round(p.walkT * 100) / 100, onGround: p.onGround,
+        hp: p.hp, maxHp: p.maxHp,
+        held: held?.id ?? 0,
+        swingT: p.swing ? p.swing.t / p.swing.dur : 0,
+        armorH: p.armor?.head?.id ?? 0,
+        armorB: p.armor?.body?.id ?? 0,
+        armorL: p.armor?.legs?.id ?? 0,
+      });
+    }
   }
 
   private tickTitleCam(): void {
@@ -2369,8 +2452,12 @@ export class GameEngine {
     data[p] = r; data[p + 1] = g; data[p + 2] = b; data[p + 3] = 255;
   }
 
-  /** 瓦片变化时更新小地图(立即) + 全屏地图(脏格, 每帧批量重画) */
-  private onTileChanged = (x: number, y: number): void => {
+  /** 瓦片变化时更新小地图(立即) + 全屏地图(脏格, 每帧批量重画) + 联机广播(15-b) */
+  private onTileChanged = (x: number, y: number, id: number): void => {
+    // 联机: 玩家操作引发的变更广播给房间(液体由各端本地模拟; 远端回放不重播)
+    if (net.online && !this.applyingNet && id !== T.WATER && id !== T.LAVA) {
+      net.queueTile(x, y, id, false);
+    }
     if (this.mmCanvas && this.mmImg) {
       this.paintMMCell(this.mmImg.data, x, y);
       this.mmCanvas.getContext('2d')!.putImageData(this.mmImg, 0, 0, x, y, 1, 1);
@@ -2462,6 +2549,10 @@ export class GameEngine {
     put('devMode', this.devMode);
     put('playerName', this.playerName);
     put('seed', this.seedStr);
+    // ---- 联机状态(15-b) ----
+    put('mpOnline', net.online);
+    put('mpRoom', net.room);
+    put('mpCount', net.online ? net.remotes.size + 1 : 0);
     put('biomeName', BIOME_NAMES[this.world.biomeAt(clamp(Math.floor(p.x / 16), 0, this.world.w - 1))] ?? '森林');
     if (this.uiDirty || force) {
       const craftables = RECIPES.map((r, i) => ({
@@ -2493,6 +2584,7 @@ export function getEngine(): GameEngine | null { return inst; }
 
 export const engine: EngineAPI = {
   enterWorld: () => inst?.enterWorld(),
+  enterWorldMP: (name, room) => inst?.enterWorldMP(name, room),
   continueGame: () => inst?.continueGame(),
   regenerate: () => inst?.regenerate(),
   newWorld: (size, seedStr, playerName, dev) => inst?.newWorld(size, seedStr, playerName, dev),

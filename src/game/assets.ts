@@ -84,25 +84,33 @@ export function tileFamily(id: number): number {
   return TILE_FAMILY[id] ?? id;
 }
 
-// ==================== 精灵表布局常量(参考站提取) ====================
-// 14-a 尺寸勘误: 参考站瓦片 32px、玩家绘 64x96(=2x3 格) —— 我方瓦片 16px,
-// 全部精灵应取参考站一半(玩家/僵尸/骷髅/向导 32x48, 史莱姆/魔眼 32x24, 蝙蝠 24x16,
-// 噬魂者 32x32, EoC 64x64)。旧版统一画大了 25%, 与世界比例失调。
+// ==================== 精灵表布局常量 ====================
+// 15-a 比例勘误: 全部改为「原生尺寸绘制」原则 —— 素材本身即按 16px/瓦片比例绘制,
+// 旧版一律压缩到 32x48 等固定框导致严重变形(骷髅 48宽内容压进32宽框、EoC 162高
+// 内容压进 64x64、噬魂者 62x78 画成 32x32、魔眼 37x22 拉成 32x24 等)。
+// 逐帧 bbox 实测 + VLM 确认:
+//   player 380x30 = 19帧x20宽(半尺寸表, 内容~11-15x24) → 2x 绘制 40x60(原版 40x56)
+//   zombie 170x46 = 3 有效帧x34宽, 内容 22x46 → 原生 34x46
+//   skeleton 420x48 = 14帧x30宽(旧版按 60宽x7帧切片 = 腰斩) → 原生 30x48
+//   guide 552x48 = 15 变宽帧, 紧裁剪 → 原生帧宽x48
+//   slime 32x24 / eye 37x22 / bat 28x24 / eos 42x78 全部原生
+//   EoC 两阶段素材为「竖直存储」(瞳孔朝下), 需顺时针旋转90°后再绘制:
+//     P1 帧 110x162 → 旋转后 162x110; P2 帧 110x146 → 146x110
 export const LAYOUT = {
-  player: { fw: 20, fh: 30, frames: 19, drawW: 32, drawH: 48 },       // 帧宽20x30, 绘制32x48世界px(玩家2x3格)
-  zombie: { fw: 34, fh: 46, frames: 3, drawW: 32, drawH: 48 },
-  skeleton: { fw: 60, fh: 48, frames: 7, drawW: 32, drawH: 48, offX: 0 },
-  guide: { frames: [[0,26],[29,30],[66,28],[97,32],[130,32],[163,32],[198,30],[231,28],[264,28],[297,28],[330,26],[363,24],[396,24],[429,26],[462,28]] as [number,number][], drawW: 32, drawH: 48, offX: 0 },
-  slime: { fw: 32, fh: 24, frames: 2, drawW: 32, drawH: 24 },
-  eye: { fw: 37, fh: 22, frames: 2, drawW: 32, drawH: 24 },
-  bat: { fw: 28, fh: 24, frames: 4, drawW: 24, drawH: 16 },
-  eos: { fw: 42, fh: 78, frames: 2, drawW: 32, drawH: 32 },
-  eoc1: { drawW: 64, drawH: 64 },
-  eoc2: { drawW: 64, drawH: 64 },
-  eowHead: { drawW: 48, drawH: 48 },
-  eowBody: { drawW: 48, drawH: 48 },
-  eowTail: { drawW: 48, drawH: 48 },
-  tree: { srcW: 76, srcH: 142 },                                       // 按树高拉伸
+  player: { fw: 20, fh: 30, frames: 19, drawW: 40, drawH: 60 },       // 2x 半尺寸帧(内容≈22-30x48, 原版玩家 40x56)
+  zombie: { fw: 34, fh: 46, frames: 3, drawW: 34, drawH: 46 },         // 原生
+  skeleton: { fw: 30, fh: 48, frames: 14, drawW: 30, drawH: 48 },     // 原生(14帧修正!)
+  guide: { frames: [[0,26],[29,30],[66,28],[97,32],[130,32],[163,32],[198,30],[231,28],[264,28],[297,28],[330,26],[363,24],[396,24],[429,26],[462,28]] as [number,number][], drawH: 48 },
+  slime: { fw: 32, fh: 24, frames: 2, drawW: 32, drawH: 24 },         // 原生
+  eye: { fw: 37, fh: 22, frames: 2, drawW: 37, drawH: 22 },           // 原生
+  bat: { fw: 28, fh: 24, frames: 4, drawW: 28, drawH: 24 },           // 原生
+  eos: { fw: 42, fh: 78, frames: 2, drawW: 42, drawH: 78 },           // 原生
+  eoc1: { drawW: 162, drawH: 110 },   // P1 旋转后原生帧(110x162 → 162x110)
+  eoc2: { drawW: 146, drawH: 110 },   // P2 旋转后原生帧(110x146 → 146x110)
+  eowHead: { drawW: 46, drawH: 68 },  // 原生
+  eowBody: { drawW: 42, drawH: 46 },
+  eowTail: { drawW: 42, drawH: 64 },
+  tree: { srcW: 76, srcH: 142, topH: 64, midH: 48, botH: 30 },        // 树冠0-64/树干带枝64-112/根部112-142, 定宽切片绘制
 } as const;
 
 // ==================== 加载 ====================
@@ -388,7 +396,8 @@ export function drawImgSkeleton(ctx: CanvasRenderingContext2D, x: number, y: num
   const A = store(); if (!A.ready) return false;
   const img = A.img('Skeleton'); if (!img) return false;
   const L = LAYOUT.skeleton;
-  blit(ctx, img, mod(Math.floor(walkT), L.frames) * L.fw, L.fw, L.fh, x + L.offX, y, L.drawW, L.drawH, facing, flash);
+  // 15-a: 真实帧结构为 14帧x30宽(旧版 60宽x7帧切片 → 画面为两帧拼接的腰斩图)
+  blit(ctx, img, mod(Math.floor(walkT), L.frames) * L.fw, L.fw, L.fh, x, y, L.drawW, L.drawH, facing, flash);
   return true;
 }
 
@@ -402,8 +411,10 @@ export function drawImgGuide(ctx: CanvasRenderingContext2D, x: number, y: number
   if (sitting) f = 14;
   else if (Math.abs(walkT) > 0.001) f = 1 + mod(Math.floor(walkT * 13 / (Math.PI * 2)), 13);
   const fr = L.frames[f] ?? [0, 26];
-  // 参考站: drawImage(img, sx, 0, fw, 48, x, y, drawW, drawH) — 帧内容已紧裁剪且居中
-  blit(ctx, img, fr[0], fr[1], 48, x, y, L.drawW, L.drawH, facing, false);
+  // 15-a: 帧宽原生绘制(旧版拉伸到固定 32 宽导致胖瘦随帧跳变);
+  // 调用方 x 已按 IMG_OFF.guide(-16) 左移, 换算回中心再按本帧宽居中
+  const dx = x + 16 - fr[1] / 2;
+  blit(ctx, img, fr[0], fr[1], 48, dx, y, fr[1], L.drawH, facing, false);
   return true;
 }
 
@@ -447,23 +458,48 @@ export function drawImgEos(ctx: CanvasRenderingContext2D, x: number, y: number, 
   return true;
 }
 
-/** EoC: phase1/2, lookX/Y ±1 目光偏移, spin 旋转弧度 */
-export function drawImgEoC(ctx: CanvasRenderingContext2D, x: number, y: number, phase: number, lookX: number, lookY: number, spin: number, flash: boolean): boolean {
+/** 素材顺时针旋转 90° 的缓存画布(EoC 两阶段素材为竖直存储, 瞳孔朝下; 旋转后 3 帧改为纵向排列) */
+const rotCWCache = new Map<string, HTMLCanvasElement>();
+function rotatedCW(name: string): Img | null {
+  const A = store();
+  const hit = rotCWCache.get(name);
+  if (hit) return hit;
+  const img = A.img(name);
+  if (!img) return null;
+  const sw = srcW(img), sh = srcH(img);
+  if (!sw || !sh) return null;
+  const c = document.createElement('canvas');
+  c.width = sh; c.height = sw;   // 旋转后尺寸互换(330x162 → 162x330)
+  const x = c.getContext('2d');
+  if (!x) return null;
+  x.imageSmoothingEnabled = false;
+  x.translate(sh, 0);
+  x.rotate(Math.PI / 2);
+  x.drawImage(img, 0, 0);
+  rotCWCache.set(name, c);
+  return c;
+}
+
+/** EoC: phase1/2, lookX/Y ±1 目光偏移, spin 旋转弧度, facing ±1 移动朝向(镜像) */
+export function drawImgEoC(ctx: CanvasRenderingContext2D, x: number, y: number, phase: number, lookX: number, lookY: number, spin: number, flash: boolean, facing: number): boolean {
   const A = store(); if (!A.ready) return false;
-  const img = A.img(phase === 2 ? 'Eye_of_Cthulhu_Phase_2' : 'Eye_of_Cthulhu_Phase_1'); if (!img) return false;
-  // 素材为 3 帧横排(每帧 ~110px, 帧间瞳位微差), 取中间帧; 中心对齐 80x80
+  const name = phase === 2 ? 'Eye_of_Cthulhu_Phase_2' : 'Eye_of_Cthulhu_Phase_1';
+  const img = rotatedCW(name); if (!img) return false;
+  // 15-a: 素材竖直存储 → 旋转 90° 后原生尺寸绘制(P1 162x110 / P2 146x110);
+  // 旧版 110x162 内容压进 64x64 = 严重压扁。旋转后瞳孔朝左, facing=1(向右)时镜像。
   const sw = srcW(img), sh = srcH(img);
   if (!sw || !sh) return false;
-  const fw = Math.floor(sw / 3);
-  const L = LAYOUT.eoc1;
+  const L = phase === 2 ? LAYOUT.eoc2 : LAYOUT.eoc1;
   ctx.save();
-  ctx.translate(x + L.drawW / 2 + lookX * 2, y + L.drawH / 2 + lookY * 2);   // 目光偏移 ±2px
-  if (spin > 0) ctx.rotate(spin);                                             // 旋转绕中心
-  ctx.drawImage(img, fw, 0, fw, sh, -L.drawW / 2, -L.drawH / 2, L.drawW, L.drawH);
+  ctx.translate(x + lookX * 2, y + lookY * 2);   // 目光偏移 ±2px(传入的 x,y 为实体中心)
+  if (spin > 0) ctx.rotate(spin);                 // 旋转绕中心
+  if (facing === 1) ctx.scale(-1, 1);
+  // 旋转后 3 帧纵向排列(每帧 drawW x drawH), 取中间帧(与旧版一致, 瞳位居中)
+  ctx.drawImage(img, 0, L.drawH, L.drawW, L.drawH, -L.drawW / 2, -L.drawH / 2, L.drawW, L.drawH);
   if (flash) {
     ctx.globalCompositeOperation = 'lighter';
     ctx.globalAlpha = 0.75;
-    ctx.drawImage(img, fw, 0, fw, sh, -L.drawW / 2, -L.drawH / 2, L.drawW, L.drawH);
+    ctx.drawImage(img, 0, L.drawH, L.drawW, L.drawH, -L.drawW / 2, -L.drawH / 2, L.drawW, L.drawH);
   }
   ctx.restore();
   return true;
@@ -485,11 +521,15 @@ export function drawImgEoW(ctx: CanvasRenderingContext2D, kind: 'head' | 'body' 
 export function drawTreeSprite(ctx: CanvasRenderingContext2D, baseX: number, baseY: number, heightTiles: number, variant: number, tint: string | null, chop: number): boolean {
   const A = store(); if (!A.ready) return false;
   const img = A.img('tree_example'); if (!img) return false;
-  // 高度=(树干格数+3)*16 世界px, 宽 76/142*高; 树底对齐树基格底, 水平居中于树干列
-  const h = (heightTiles + 3) * 16;
-  const w = (LAYOUT.tree.srcW / LAYOUT.tree.srcH) * h;
+  // 15-a: 定宽切片绘制(旧版 w=76/142*h 等比拉伸 → 高树被等比加宽, 20格树宽达 10.7 格, 严重肥胖)。
+  // 素材纵向结构: 树冠 0-64 / 树干带枝 64-112(平铺) / 根部 112-142; 总高=(树干格数+3)*16;
+  // 宽恒定 76(树干在图像中心 x≈38, 与树基列对齐), 底对齐树基格底。
+  const L = LAYOUT.tree;
+  const totalH = (heightTiles + 3) * 16;
+  const midH = Math.max(L.midH, totalH - L.topH - L.botH);
+  const w = L.srcW;
   const dx = baseX - w / 2;
-  const dy = baseY + 16 - h;
+  const dy = baseY + 16 - totalH;
   const TINT: Record<string, string> = {
     snow: 'rgba(200,220,255,0.45)',
     jungle: 'rgba(60,180,60,0.42)',
@@ -502,12 +542,24 @@ export function drawTreeSprite(ctx: CanvasRenderingContext2D, baseX: number, bas
     ctx.scale(-1, 1);
     ctx.translate(-dx - w / 2, 0);
   }
-  ctx.drawImage(src, 0, 0, LAYOUT.tree.srcW, LAYOUT.tree.srcH, dx, dy, w, h);
+  // 顶部树冠(原生 64px)
+  ctx.drawImage(src, 0, 0, w, L.topH, dx, dy, w, L.topH);
+  // 中段树干(带一侧枝杈的 48px 切片, 1:1 平铺; 原版树干同样由重复段构成)
+  let yy = dy + L.topH;
+  let remain = midH;
+  while (remain > 0) {
+    const take = Math.min(L.midH, remain);
+    ctx.drawImage(src, 0, L.topH, w, take, dx, yy, w, take);
+    yy += take;
+    remain -= take;
+  }
+  // 底部根须(原生 30px)
+  ctx.drawImage(src, 0, L.topH + L.midH, w, L.botH, dx, yy, w, L.botH);
   ctx.restore();
   if (chop > 0) {            // 挖掘进度暗化
     ctx.save();
     ctx.fillStyle = `rgba(0,0,0,${Math.min(0.5, chop * 0.5).toFixed(4)})`;
-    ctx.fillRect(dx, dy, w, h);
+    ctx.fillRect(dx, dy, w, totalH);
     ctx.restore();
   }
   return true;
@@ -651,6 +703,16 @@ const ICON_MAP: Readonly<Record<number, { name: string; crop?: boolean }>> = {
   // 无原版素材, 保持程序化图标: WOOD_SWORD / CACTUS / TABLE
 };
 
+// ---- 私有: 物品原生最大边(applyItemIcons 时记录; 手持/掉落物按原生尺寸绘制的依据) ----
+const ITEM_NATIVE = new Map<number, number>();
+
+/** 物品世界内绘制尺寸(原生最大边, 钳 8..36; 未知物品 16) — 手持/掉落物用 */
+export function itemDrawSize(id: number): number {
+  const n = ITEM_NATIVE.get(id);
+  if (!n) return 16;
+  return Math.max(8, Math.min(36, n));
+}
+
 export function applyItemIcons(tex: { icons: Record<number, HTMLCanvasElement>; iconURL: Record<number, string>; anchors: Record<number, [number, number]> }): void {
   const A = store();
   if (!A.ready) return;
@@ -663,6 +725,8 @@ export function applyItemIcons(tex: { icons: Record<number, HTMLCanvasElement>; 
     const sw = m.crop ? 16 : srcW(img);
     const sh = m.crop ? 16 : srcH(img);
     if (!sw || !sh) continue;
+    // 15-a: 记录原生最大边(手持/掉落物按原生比例绘制的依据)
+    ITEM_NATIVE.set(id, Math.max(sw, sh));
     // 16x16 画布; 保持纵横比缩到 ≤16(工具 32x32 → 16x16), 居中
     const c = document.createElement('canvas');
     c.width = 16; c.height = 16;

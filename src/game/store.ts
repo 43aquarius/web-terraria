@@ -42,6 +42,11 @@ export interface UIState {
   devMode: boolean;
   playerName: string;
   biomeName: string;               // 当前群系名
+  // ---- 联机(15-b) ----
+  chatOpen: boolean;               // 聊天输入框打开
+  mpOnline: boolean;               // 联机中
+  mpRoom: string;                  // 房间码
+  mpCount: number;                 // 在线人数(含自己)
 }
 
 type Listener = () => void;
@@ -76,6 +81,10 @@ const initial: UIState = {
   devMode: false,
   playerName: '泰拉行者',
   biomeName: '森林',
+  chatOpen: false,
+  mpOnline: false,
+  mpRoom: '',
+  mpCount: 0,
 };
 
 class UIStore {
